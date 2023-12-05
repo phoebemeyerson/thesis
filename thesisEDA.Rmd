@@ -1,0 +1,407 @@
+---
+title: "Sim Study Template"
+author: "Phoebe Meyerson"
+date: "Fall 2023"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+This document contains a template to help with setting up your simulation studies.
+
+# Load packages
+
+```{r}
+library(here)
+library(mapview)
+library(mase)
+library(sf)
+library(sfdep)
+library(purrr)
+library(survey)
+library(SUMMER)
+library(INLA)
+library(tidyverse)
+library(Matrix)
+library(matrixcalc)
+```
+
+# Data
+
+```{r}
+# Truth
+truth <- readRDS(here("data/simdata.rds")) %>%
+  mutate(tnt = case_when((tnt == 2) ~ 0, 
+                         (tnt == 1) ~ 1)) %>%
+  rename(tcc = tcc16)
+
+# Load data
+dat_all_reps <- readRDS(here("data/sample.rds")) %>%
+  mutate(tnt = case_when( # refactor tnt as indicator variable
+    tnt == 1 ~ 1,
+    tnt == 2 ~ 0
+  )) %>%
+  mutate(
+    DOMAIN = SUBSECTION,
+    PROVINCE = "M333"
+  ) %>%
+  rename(tcc = tcc16)
+
+# Set up data so that easy to access samples for each iteration of simulation
+dat_list <- dat_all_reps %>%
+  group_by(rep) %>%
+  group_split()
+
+# set up xpop as needed for different SAE packages
+xpop <- read_csv(here("data/m333.csv"), show_col_types = FALSE) %>%
+  rename(SUBSECTION = MAP_UNIT_S)
+
+# load ecomap shapefile
+ecomap <- readRDS(here("data/ecomap.rds")) %>%
+  filter(PROVINCE == "M333")
+```
+
+```{r}
+# PG's functions
+
+# PG's code for Horvitz-Thompson
+get_direct <- function(formula, by, sample_des, CI = 0.95) {
+  res <- svyby(formula, by, design = sample_des, svymean, na.rm = T)
+  out_dat <- data.frame(
+    region = as.vector(res[[all.vars(by)[1]]]),
+    est = as.vector(model.matrix(formula, res)[, 2]),
+    var = res$se ^ 2) %>% 
+    mutate(
+    lower = est + qnorm((1-CI)/2) * res$se,
+    upper = est + qnorm(1 - (1-CI)/2) * res$se,
+    method = "HT")
+  return(out_dat)
+}
+
+# My code for PS
+# get_ps <- function(data, sample_des, strata_var, CI = 0.95) {
+#   
+# }
+
+
+# PG's code for GREG
+get_greg <- function(working_fit, formula, by,
+                     pop_dat, sample_des, CI = 0.95) {
+  pop_unit_ests <- as.vector(predict(working_fit, pop_dat,
+                                     type = "response")) 
+  area_ests <-
+    aggregate(pop_unit_ests, 
+              list(region = as.vector(pop_dat[[all.vars(by)[1]]])),
+              mean)
+  colnames(area_ests)[2] <- "working_est"
+  sample_des$variables$res <- 
+    sample_des$variables[[all.vars(formula)[1]]] -
+    as.vector(predict(working_fit, sample_des$variables, type = "response")) 
+  sample_des$variables$region <- 
+    as.vector(sample_des$variables[[all.vars(by)[1]]])
+  res_ht <- svyby(~res, ~region, sample_des, svymean)
+  out_dat <- left_join(area_ests, res_ht, by = "region")
+  out_dat$est = out_dat$working_est + out_dat$res
+  out_dat$var = out_dat$se ^ 2
+  out_dat$method = "GREG"
+  out_dat$lower = out_dat$est + qnorm((1-CI)/2) * out_dat$se
+  out_dat$upper = out_dat$est + qnorm(1 - (1-CI)/2) * out_dat$se
+  out_dat <- dplyr::select(out_dat, region, est, var, lower, upper, method)
+  return(out_dat)
+}
+
+# PG's code for SMA
+get_bym2_sdir <- function(direct_est, 
+                                adj_mat,
+                                pc_u = 5, # play around with these numbers
+                                pc_alpha = 0.01, 
+                                pc_u_phi = 0.5,
+                                pc_alpha_phi = 2/3,
+                                CI = .95) {
+  hyperpc_bym_int <- list(
+    prec = list(prior = "pc.prec", param = c(pc_u , pc_alpha)),  
+    phi = list(prior = 'pc', param = c(pc_u_phi , pc_alpha_phi))
+  )
+  sd_dat <- direct_est %>%
+    mutate(est = ifelse(est != 0 & est != 1 & var > 1e-5, est, NA)) %>%
+    mutate(prec = 1 / var,
+           region = match(region, rownames(adj_mat)))
+  sd_fit <-
+    INLA::inla(est ~ f(region, model = "bym2", 
+                       graph = adj_mat, 
+                       hyper = hyperpc_bym_int, 
+                       scale.model = TRUE),
+               family = "gaussian", data = sd_dat, 
+               scale = sd_dat$prec,
+               control.family = 
+                 list(hyper = list(prec = list(initial= log(1), fixed= TRUE))),
+               control.predictor = list(compute = TRUE),
+               control.compute=list(config = TRUE))
+  
+  sd_fit_sample <-
+    inla.posterior.sample(n = 1000, sd_fit,
+                          list(region = 1:nrow(adj_mat), "(Intercept)" = 1))
+  sd_est_mat <-
+    do.call(cbind, lapply(sd_fit_sample,
+                          function(x) x$latent[1:nrow(adj_mat)] +
+                            x$latent[nrow(adj_mat) + 1]))
+  out_dat <- data.frame(region = rownames(adj_mat),
+                        est = rowMeans(sd_est_mat),
+                        median = apply(sd_est_mat, 1,
+                                       function(x) median(x, na.rm = T)), # get rid of ?
+                        var = apply(sd_est_mat, 1, var),
+                        lower = apply(sd_est_mat, 1,
+                                      function(x) quantile(x, (1-CI)/2)),
+                        upper = apply(sd_est_mat, 1,
+                                      function(x) quantile(x, 1-(1-CI)/2)),
+                        method = paste0("bymS", direct_est$method[1]))
+  return(out_dat)
+}
+```
+
+
+```{r}
+# USING ONE SAMPLE
+svy_dat <- dat_list[[1]]
+
+# add column of weights to svy_dat
+# LATER: figure out how to do this quickly for every sample
+counts.N <- truth %>%
+  group_by(SUBSECTION) %>%
+  count()
+
+weights.n <- svy_dat %>%
+  group_by(SUBSECTION) %>%
+  count() %>%
+  ungroup() %>%
+  mutate(weights = counts.N$n / n) %>%
+  dplyr::select(SUBSECTION, weights)
+
+svy_dat <- left_join(svy_dat, weights.n, by = "SUBSECTION")
+
+# making sample_des
+sample_des <- svydesign(id = ~1,
+                        data = svy_dat,
+                        weights = ~weights)
+
+# HT
+HT_est <- get_direct(~DRYBIO, ~SUBSECTION, sample_des)
+
+# working_fit
+working_fit <- svyglm(DRYBIO ~ tcc + tnt, sample_des)
+
+# pop_dat 
+pop_dat <- truth %>%
+  dplyr::select(SUBSECTION, DRYBIO, tcc, tnt)
+
+pop_dat_split <- pop_dat %>%
+  group_by(SUBSECTION) %>%
+  group_split()
+
+# GREG
+GREG_est <- data.frame(region = c(), 
+                       est = c(),
+                       var = c(),
+                       lower = c(),
+                       upper = c(),
+                       method = c())
+for (i in 1:23) {
+  GREG_i <- get_greg(working_fit, ~DRYBIO, ~SUBSECTION, 
+                     pop_dat_split[[i]], sample_des, CI = 0.95)
+  GREG_est<- rbind(GREG_est, GREG_i)
+}
+
+mGREG_est <- get_greg(working_fit, ~DRYBIO, ~SUBSECTION, pop_dat, sample_des, CI = 0.95)
+
+## NOTE: mGREG and GREG estimates are the same... fishy
+```
+
+
+```{r}
+# setting up
+PS_est <- data.frame(region = c(), 
+                     est = c(),
+                     var = c(),
+                     lower = c(),
+                     upper = c(),
+                     method = c())
+
+domains <- unique(xpop$SUBSECTION)
+D <- length(domains)
+
+# fitting PS using mase
+for (i in 1:D) {
+  xpop_d <- filter(xpop, SUBSECTION == domains[i])
+  samp_d <- filter(svy_dat, SUBSECTION == domains[i])
+  xpop_d_ps <- xpop_d %>%
+    rename(tnt0 = tnt.2, tnt1 = tnt.1) %>%
+    dplyr::select(tnt0, tnt1) %>%
+    pivot_longer(everything(), names_to = "tnt", values_to = "prop") %>%
+    mutate(tnt = parse_number(tnt))
+  
+  PS <- postStrat(y = samp_d$DRYBIO, N = xpop_d$npixels, 
+                  xsample = samp_d$tnt, xpop = xpop_d_ps,
+                  datatype = "means",
+                  var_est = TRUE,
+                  var_method = "SRSunconditional")
+  PS_est_i <- data.frame(
+    region = domains[i],
+    est = PS$pop_mean,
+    var = PS$pop_mean_var,
+    lower = PS$pop_mean - 1.96*sqrt(PS$pop_mean_var),
+    upper = PS$pop_mean + 1.96*sqrt(PS$pop_mean_var),
+    method = "PS"
+  )
+  PS_est <- rbind(PS_est, PS_est_i)
+}
+
+```
+
+\section{Figuring out adjacency matrices}
+```{r}
+### FROM LATTICE PROCESSES TUTORIAL 141
+# using ecomap data
+mapview(ecomap)
+
+# contiguous neighbors
+m333_contig <- st_contiguity(ecomap)
+m333_contig_sf <- st_as_edges(st_centroid(ecomap$geometry), nb = m333_contig)
+ggplot() + geom_sf(data = ecomap) +
+  geom_sf(data = m333_contig_sf) + ggtitle("Contiguous Neighbors")
+
+m333_adj <- wt_as_matrix(m333_contig, st_weights(m333_contig, style = "B"))
+rownames(m333_adj) <- GREG_est$region
+
+# trying out SMA
+SMA_est <- get_bym2_sdir(GREG_est, m333_adj)
+```
+
+```{r}
+# ALL ESTIMATES
+# truth
+true_est <- truth %>%
+  group_by(SUBSECTION) %>%
+  summarize(mean(DRYBIO))
+# HT
+HT_est
+
+# PS
+PS_est
+
+# GREG
+GREG_est
+
+#SMA
+SMA_est
+```
+
+```{r}
+# SIM STUDY PSEUDOCODE
+# get it working for a loop of 20
+# store everything in a really long dataset (est, SE, upper, lower, method, rep)
+  # each rep gets me 23 x 4 rows
+# want to know: confidence interval coverage rates, empirical MSE (compare to SE^2), 
+  # percent relative bias of estimate and PRB of MSE estimator
+  # do this by method and subsection
+# make lots of boxplots w 23 points for each estimator
+
+# after this, do some subsampling, consider fire scenario
+  # look into how to make a new mini polygon within a subsection
+  # play around with model selection, SMA hyperparameters, adjacency matrix construction
+```
+
+
+\section{KM Summer Simulation Code: Ignore For Now}
+# Create container(s) for storing simulation output
+```{r}
+store <- list()
+
+# Number of monte carlo samples
+store$B <- 10 # Set larger once you get your sim working
+
+# Number of domains
+store$domains <- unique(xpop$MAP_UNIT_S)
+store$D <- length(store$domains)
+
+# Number of estimators
+# (Will just do 2 for the template)
+store$n_est <- 2
+
+# Estimates
+store$estimates <- array(rep(NA, store$B*store$D*store$n_est), 
+                         c(store$B, store$D, store$n_est))
+
+# Estimated SEs
+store$ses <- array(rep(NA, store$B*store$D*store$n_est), 
+                         c(store$B, store$D, store$n_est))
+
+# CIs 
+store$ci_lb <- array(rep(NA, store$B*store$D*store$n_est), 
+                         c(store$B, store$D, store$n_est))
+
+store$ci_ub <- array(rep(NA, store$B*store$D*store$n_est), 
+                         c(store$B, store$D, store$n_est))
+```
+
+# Run simulation
+
+```{r}
+
+for(i in 1:store$B){
+  # Select/set sample
+  samp <- dat_list[[i]]
+  
+  for(d in 1:store$D){
+    
+    # For direct estimators, filter down to just the domain of interest
+    samp_d <- filter(samp, SUBSECTION == store$domains[d])
+    xpop_d <- filter(xpop, MAP_UNIT_S == store$domains[d])
+  
+    # Fit estimators
+  
+    # HT
+    HT <- horvitzThompson(y = samp_d$DRYBIO, N = xpop_d$npixels,
+                        var_est = TRUE)
+    # PS
+    xpop_d_ps <- xpop_d %>%
+      dplyr::select(tnt.1, tnt.2) %>%
+      pivot_longer(everything(), names_to = "tnt", values_to = "prop") %>%
+      mutate(tnt = parse_number(tnt)*10)
+    PS <- postStrat(y = samp_d$DRYBIO, N = xpop_d$npixels, 
+                    xsample = samp_d$tnt, xpop = xpop_d_ps,
+                    datatype = "means",
+                    var_est = TRUE,
+                    var_method = "SRSunconditional")
+  
+  # Store estimates, their SEs, and CIs
+    store$estimates[i, d, 1] <- HT$pop_mean
+    store$estimates[i, d, 2] <- PS$pop_mean
+    
+    store$ses[i, d, 1] <- sqrt(HT$pop_mean_var)
+    store$ses[i, d, 2] <- sqrt(PS$pop_mean_var) 
+    
+    store$ci_lb[i, d, 1] <- HT$pop_mean - 1.96*sqrt(HT$pop_mean_var)
+    store$ci_lb[i, d, 2] <- PS$pop_mean - 1.96*sqrt(PS$pop_mean_var) 
+  
+    store$ci_ub[i, d, 1] <- HT$pop_mean + 1.96*sqrt(HT$pop_mean_var)
+    store$ci_ub[i, d, 2] <- PS$pop_mean + 1.96*sqrt(PS$pop_mean_var) 
+  }
+}
+```
+
+# Compute performance metrics
+
+```{r}
+# Percent relative bias of estimators
+
+# Percent relative bias of SEs
+
+# Confidence interval coverage
+```
+
+
+# Discussion
+
+Create some graphs and tables of your results.  Write 1-2 paragraphs to summarize your results with a focus on the over-arching goal of selecting the *best* SAE for FIA.
