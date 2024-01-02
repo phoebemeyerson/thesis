@@ -201,6 +201,7 @@ pop_dat_split <- pop_dat %>%
   group_split()
 
 # GREG
+# these estimates are unnecessary yay
 GREG_est <- data.frame(region = c(), 
                        est = c(),
                        var = c(),
@@ -212,7 +213,7 @@ for (i in 1:23) {
                      pop_dat_split[[i]], sample_des, CI = 0.95)
   GREG_est<- rbind(GREG_est, GREG_i)
 }
-
+# this is the one I want to use
 mGREG_est <- get_greg(working_fit, ~DRYBIO, ~SUBSECTION, pop_dat, sample_des, CI = 0.95)
 
 ## NOTE: mGREG and GREG estimates are the same... fishy
@@ -263,7 +264,7 @@ for (i in 1:D) {
 ```{r}
 ### FROM LATTICE PROCESSES TUTORIAL 141
 # using ecomap data
-mapview(ecomap)
+# mapview(ecomap)
 
 # contiguous neighbors
 m333_contig <- st_contiguity(ecomap)
@@ -283,7 +284,7 @@ SMA_est <- get_bym2_sdir(GREG_est, m333_adj)
 # truth
 true_est <- truth %>%
   group_by(SUBSECTION) %>%
-  summarize(mean(DRYBIO))
+  summarize(truth = mean(DRYBIO))
 # HT
 HT_est
 
@@ -316,79 +317,79 @@ SMA_est
 \section{KM Summer Simulation Code: Ignore For Now}
 # Create container(s) for storing simulation output
 ```{r}
-store <- list()
-
-# Number of monte carlo samples
-store$B <- 10 # Set larger once you get your sim working
-
-# Number of domains
-store$domains <- unique(xpop$MAP_UNIT_S)
-store$D <- length(store$domains)
-
-# Number of estimators
-# (Will just do 2 for the template)
-store$n_est <- 2
-
-# Estimates
-store$estimates <- array(rep(NA, store$B*store$D*store$n_est), 
-                         c(store$B, store$D, store$n_est))
-
-# Estimated SEs
-store$ses <- array(rep(NA, store$B*store$D*store$n_est), 
-                         c(store$B, store$D, store$n_est))
-
-# CIs 
-store$ci_lb <- array(rep(NA, store$B*store$D*store$n_est), 
-                         c(store$B, store$D, store$n_est))
-
-store$ci_ub <- array(rep(NA, store$B*store$D*store$n_est), 
-                         c(store$B, store$D, store$n_est))
+# store <- list()
+# 
+# # Number of monte carlo samples
+# store$B <- 10 # Set larger once you get your sim working
+# 
+# # Number of domains
+# store$domains <- unique(xpop$MAP_UNIT_S)
+# store$D <- length(store$domains)
+# 
+# # Number of estimators
+# # (Will just do 2 for the template)
+# store$n_est <- 2
+# 
+# # Estimates
+# store$estimates <- array(rep(NA, store$B*store$D*store$n_est), 
+#                          c(store$B, store$D, store$n_est))
+# 
+# # Estimated SEs
+# store$ses <- array(rep(NA, store$B*store$D*store$n_est), 
+#                          c(store$B, store$D, store$n_est))
+# 
+# # CIs 
+# store$ci_lb <- array(rep(NA, store$B*store$D*store$n_est), 
+#                          c(store$B, store$D, store$n_est))
+# 
+# store$ci_ub <- array(rep(NA, store$B*store$D*store$n_est), 
+#                          c(store$B, store$D, store$n_est))
 ```
 
 # Run simulation
 
 ```{r}
-
-for(i in 1:store$B){
-  # Select/set sample
-  samp <- dat_list[[i]]
-  
-  for(d in 1:store$D){
-    
-    # For direct estimators, filter down to just the domain of interest
-    samp_d <- filter(samp, SUBSECTION == store$domains[d])
-    xpop_d <- filter(xpop, MAP_UNIT_S == store$domains[d])
-  
-    # Fit estimators
-  
-    # HT
-    HT <- horvitzThompson(y = samp_d$DRYBIO, N = xpop_d$npixels,
-                        var_est = TRUE)
-    # PS
-    xpop_d_ps <- xpop_d %>%
-      dplyr::select(tnt.1, tnt.2) %>%
-      pivot_longer(everything(), names_to = "tnt", values_to = "prop") %>%
-      mutate(tnt = parse_number(tnt)*10)
-    PS <- postStrat(y = samp_d$DRYBIO, N = xpop_d$npixels, 
-                    xsample = samp_d$tnt, xpop = xpop_d_ps,
-                    datatype = "means",
-                    var_est = TRUE,
-                    var_method = "SRSunconditional")
-  
-  # Store estimates, their SEs, and CIs
-    store$estimates[i, d, 1] <- HT$pop_mean
-    store$estimates[i, d, 2] <- PS$pop_mean
-    
-    store$ses[i, d, 1] <- sqrt(HT$pop_mean_var)
-    store$ses[i, d, 2] <- sqrt(PS$pop_mean_var) 
-    
-    store$ci_lb[i, d, 1] <- HT$pop_mean - 1.96*sqrt(HT$pop_mean_var)
-    store$ci_lb[i, d, 2] <- PS$pop_mean - 1.96*sqrt(PS$pop_mean_var) 
-  
-    store$ci_ub[i, d, 1] <- HT$pop_mean + 1.96*sqrt(HT$pop_mean_var)
-    store$ci_ub[i, d, 2] <- PS$pop_mean + 1.96*sqrt(PS$pop_mean_var) 
-  }
-}
+# 
+# for(i in 1:store$B){
+#   # Select/set sample
+#   samp <- dat_list[[i]]
+#   
+#   for(d in 1:store$D){
+#     
+#     # For direct estimators, filter down to just the domain of interest
+#     samp_d <- filter(samp, SUBSECTION == store$domains[d])
+#     xpop_d <- filter(xpop, MAP_UNIT_S == store$domains[d])
+#   
+#     # Fit estimators
+#   
+#     # HT
+#     HT <- horvitzThompson(y = samp_d$DRYBIO, N = xpop_d$npixels,
+#                         var_est = TRUE)
+#     # PS
+#     xpop_d_ps <- xpop_d %>%
+#       dplyr::select(tnt.1, tnt.2) %>%
+#       pivot_longer(everything(), names_to = "tnt", values_to = "prop") %>%
+#       mutate(tnt = parse_number(tnt)*10)
+#     PS <- postStrat(y = samp_d$DRYBIO, N = xpop_d$npixels, 
+#                     xsample = samp_d$tnt, xpop = xpop_d_ps,
+#                     datatype = "means",
+#                     var_est = TRUE,
+#                     var_method = "SRSunconditional")
+#   
+#   # Store estimates, their SEs, and CIs
+#     store$estimates[i, d, 1] <- HT$pop_mean
+#     store$estimates[i, d, 2] <- PS$pop_mean
+#     
+#     store$ses[i, d, 1] <- sqrt(HT$pop_mean_var)
+#     store$ses[i, d, 2] <- sqrt(PS$pop_mean_var) 
+#     
+#     store$ci_lb[i, d, 1] <- HT$pop_mean - 1.96*sqrt(HT$pop_mean_var)
+#     store$ci_lb[i, d, 2] <- PS$pop_mean - 1.96*sqrt(PS$pop_mean_var) 
+#   
+#     store$ci_ub[i, d, 1] <- HT$pop_mean + 1.96*sqrt(HT$pop_mean_var)
+#     store$ci_ub[i, d, 2] <- PS$pop_mean + 1.96*sqrt(PS$pop_mean_var) 
+#   }
+# }
 ```
 
 # Compute performance metrics
