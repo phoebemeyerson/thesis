@@ -1,0 +1,301 @@
+---
+title: "simstudy"
+author: "Phoebe Meyerson"
+date: "2024-01-02"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+library(here)
+library(mapview)
+library(mase)
+library(sf)
+library(sfdep)
+library(purrr)
+library(survey)
+library(SUMMER)
+library(INLA)
+library(tidyverse)
+library(Matrix)
+library(matrixcalc)
+```
+
+```{r}
+# DATA RETRIEVAL
+# truth
+truth <- readRDS(here("data/simdata.rds")) %>%
+  mutate(tnt = case_when((tnt == 2) ~ 0, 
+                         (tnt == 1) ~ 1)) %>%
+  rename(tcc = tcc16)
+
+# Load data
+dat_all_reps <- readRDS(here("data/sample.rds")) %>%
+  mutate(tnt = case_when( # refactor tnt as indicator variable
+    tnt == 1 ~ 1,
+    tnt == 2 ~ 0
+  )) %>%
+  mutate(
+    DOMAIN = SUBSECTION,
+    PROVINCE = "M333"
+  ) %>%
+  rename(tcc = tcc16)
+
+# Set up data so that easy to access samples for each iteration of simulation
+dat_list <- dat_all_reps %>%
+  group_by(rep) %>%
+  group_split()
+
+# set up xpop as needed for different SAE packages
+xpop <- read_csv(here("data/m333.csv"), show_col_types = FALSE) %>%
+  rename(SUBSECTION = MAP_UNIT_S)
+
+# load ecomap shapefile
+ecomap <- readRDS(here("data/ecomap.rds")) %>%
+  filter(PROVINCE == "M333")
+```
+
+```{r}
+# OTHER INITIAL STEPS
+# subsection names
+domains <- unique(xpop$SUBSECTION)
+D <- length(domains)
+
+# calculating N_a for later use in survey weights
+counts.N <- truth %>%
+  group_by(SUBSECTION) %>%
+  count()
+
+# population data - CHANGE IF ADD MORE COVARIATES
+pop_dat <- truth %>%
+  dplyr::select(SUBSECTION, DRYBIO, tcc, tnt)
+
+# creating adjacency matrix for M333
+m333_contig <- st_contiguity(ecomap)
+m333_contig_sf <- st_as_edges(st_centroid(ecomap$geometry), nb = m333_contig)
+ggplot() + geom_sf(data = ecomap) +
+  geom_sf(data = m333_contig_sf) + ggtitle("Contiguous Neighbors")
+
+m333_adj <- wt_as_matrix(m333_contig, st_weights(m333_contig, style = "B"))
+rownames(m333_adj) <- domains
+colnames(m333_adj) <- domains
+
+# true estimates
+true_est <- truth %>%
+  group_by(SUBSECTION) %>%
+  summarize(true_val = mean(DRYBIO),
+            true_sd = sd(DRYBIO))
+```
+
+```{r}
+# PG FUNCTIONS
+# horvitz-thompson
+get_direct <- function(formula, by, sample_des, r, CI = 0.95) {
+  res <- svyby(formula, by, design = sample_des, svymean, na.rm = T)
+  out_dat <- data.frame(
+    region = as.vector(res[[all.vars(by)[1]]]),
+    est = as.vector(model.matrix(formula, res)[, 2]),
+    var = res$se ^ 2) %>% 
+    mutate(
+    lower = est + qnorm((1-CI)/2) * res$se,
+    upper = est + qnorm(1 - (1-CI)/2) * res$se,
+    method = "HT",
+    rep = r,
+    true_val = true_est$true_val)
+  return(out_dat)
+}
+
+# ps
+get_poststrat <- function(svy_dat, r) {
+  out_dat <- data.frame(region = c(), 
+                        est = c(),
+                        var = c(),
+                        lower = c(),
+                        upper = c(),
+                        method = c(),
+                        rep = c(),
+                        true_val = c())
+
+  # fitting PS using mase
+  for (i in 1:D) {
+    xpop_d <- filter(xpop, SUBSECTION == domains[i])
+    samp_d <- filter(svy_dat, SUBSECTION == domains[i])
+    xpop_d_ps <- xpop_d %>%
+      rename(tnt0 = tnt.2, tnt1 = tnt.1) %>%
+      dplyr::select(tnt0, tnt1) %>%
+      pivot_longer(everything(), names_to = "tnt", values_to = "prop") %>%
+      mutate(tnt = parse_number(tnt))
+    
+    PS <- postStrat(y = samp_d$DRYBIO, N = xpop_d$npixels, 
+                    xsample = samp_d$tnt, xpop = xpop_d_ps,
+                    datatype = "means",
+                    var_est = TRUE,
+                    var_method = "SRSunconditional")
+    PS_est_i <- data.frame(
+      region = domains[i],
+      est = PS$pop_mean,
+      var = PS$pop_mean_var,
+      lower = PS$pop_mean - 1.96*sqrt(PS$pop_mean_var),
+      upper = PS$pop_mean + 1.96*sqrt(PS$pop_mean_var),
+      method = "PS",
+      rep = r,
+      true_val = true_est$true_val[true_est$SUBSECTION == domains[i]]
+    )
+    out_dat <- rbind(out_dat, PS_est_i)
+  }
+  return(out_dat)
+}
+
+# greg
+get_greg <- function(working_fit, formula, by,
+                     pop_dat, sample_des, r, CI = 0.95) {
+  pop_unit_ests <- as.vector(predict(working_fit, pop_dat,
+                                     type = "response")) 
+  area_ests <-
+    aggregate(pop_unit_ests, 
+              list(region = as.vector(pop_dat[[all.vars(by)[1]]])),
+              mean)
+  colnames(area_ests)[2] <- "working_est"
+  sample_des$variables$res <- 
+    sample_des$variables[[all.vars(formula)[1]]] -
+    as.vector(predict(working_fit, sample_des$variables, type = "response")) 
+  sample_des$variables$region <- 
+    as.vector(sample_des$variables[[all.vars(by)[1]]])
+  res_ht <- svyby(~res, ~region, sample_des, svymean)
+  out_dat <- left_join(area_ests, res_ht, by = "region")
+  out_dat$est = out_dat$working_est + out_dat$res
+  out_dat$var = out_dat$se ^ 2
+  out_dat$method = "GREG"
+  out_dat$rep = r
+  out_dat$lower = out_dat$est + qnorm((1-CI)/2) * out_dat$se
+  out_dat$upper = out_dat$est + qnorm(1 - (1-CI)/2) * out_dat$se
+  out_dat$true_val = true_est$true_val
+  out_dat <- dplyr::select(out_dat, region, est, var, lower, upper, 
+                           method, rep, true_val)
+  return(out_dat)
+}
+
+# sma
+get_bym2_sdir <- function(direct_est, 
+                          adj_mat,
+                          r,
+                          pc_u = 5, # play around with these numbers
+                          pc_alpha = 0.01, 
+                          pc_u_phi = 0.5,
+                          pc_alpha_phi = 2/3,
+                          CI = .95) {
+  hyperpc_bym_int <- list(
+    prec = list(prior = "pc.prec", param = c(pc_u , pc_alpha)),  
+    phi = list(prior = 'pc', param = c(pc_u_phi , pc_alpha_phi))
+  )
+  sd_dat <- direct_est %>%
+    mutate(est = ifelse(est != 0 & est != 1 & var > 1e-5, est, NA)) %>%
+    mutate(prec = 1 / var,
+           region = match(region, rownames(adj_mat)))
+  sd_fit <-
+    INLA::inla(est ~ f(region, model = "bym2", 
+                       graph = adj_mat, 
+                       hyper = hyperpc_bym_int, 
+                       scale.model = TRUE),
+               family = "gaussian", data = sd_dat, 
+               scale = sd_dat$prec,
+               control.family = 
+                 list(hyper = list(prec = list(initial= log(1), fixed= TRUE))),
+               control.predictor = list(compute = TRUE),
+               control.compute=list(config = TRUE))
+  
+  sd_fit_sample <-
+    inla.posterior.sample(n = 1000, sd_fit,
+                          list(region = 1:nrow(adj_mat), "(Intercept)" = 1))
+  sd_est_mat <-
+    do.call(cbind, lapply(sd_fit_sample,
+                          function(x) x$latent[1:nrow(adj_mat)] +
+                            x$latent[nrow(adj_mat) + 1]))
+  out_dat <- data.frame(region = rownames(adj_mat),
+                        est = rowMeans(sd_est_mat),
+                        var = apply(sd_est_mat, 1, var),
+                        lower = apply(sd_est_mat, 1,
+                                      function(x) quantile(x, (1-CI)/2)),
+                        upper = apply(sd_est_mat, 1,
+                                      function(x) quantile(x, 1-(1-CI)/2)),
+                        method = "SMA",
+                        rep = r,
+                        true_val = true_est$true_val)
+  return(out_dat)
+}
+```
+
+```{r}
+# ACTUAL SIMULATION
+nreps <- 20 # change to length(dat_list)
+results <- data.frame(region = c(), 
+                      est = c(),
+                      var = c(),
+                      lower = c(),
+                      upper = c(),
+                      method = c(),
+                      rep = c(),
+                      true_val = c()) # add SD if needed later
+
+for (i in 1:nreps) {
+  rep_dat <- dat_list[[i]]
+  
+  # add weights to rep_dat
+  weights.n <- rep_dat %>%
+    group_by(SUBSECTION) %>%
+    count() %>%
+    ungroup() %>%
+    mutate(weights = counts.N$n / n) %>%
+    dplyr::select(SUBSECTION, weights)
+  
+  rep_dat <- left_join(rep_dat, weights.n, by = "SUBSECTION")
+  
+  # making sample design
+  sample_des <- svydesign(id = ~1,
+                          data = rep_dat,
+                          weights = ~weights)
+  
+  # HT estimates
+  results <- rbind(results,
+                   get_direct(~DRYBIO, ~SUBSECTION, sample_des, i))
+  
+  # PS estimates
+  results <- rbind(results, get_poststrat(rep_dat, i))
+  
+  # GREG estimates
+  working_fit <- svyglm(DRYBIO ~ tcc + tnt, sample_des)
+  results <- rbind(results,
+                   get_greg(working_fit, ~DRYBIO, ~SUBSECTION, 
+                            pop_dat, sample_des, CI = 0.95, i))
+  
+  # SMA estimates
+  results <- rbind(results, get_bym2_sdir(GREG_est, m333_adj, i))
+}
+```
+
+```{r}
+# PROCESSING AND PERFORMANCE METRICS
+metrics <- results %>%
+  mutate(CI_cov = ifelse(true_val >= lower & true_val <= upper, 1, 0),
+         relative_bias = (est - true_val) / true_val * 100) %>%
+  group_by(method, region) %>%
+  summarize(cov_rate = mean(CI_cov),
+            pct_rel_bias = mean(relative_bias))
+
+# !! need to add empirical MSE and PRB of MSE
+```
+
+```{r}
+# PLOTTING
+# percent relative bias boxplot
+ggplot(metrics, aes(x = method, y = pct_rel_bias)) + 
+  geom_boxplot() + geom_hline(yintercept = 0)  
+
+# confidence interval coverage boxplot
+ggplot(metrics, aes(x = method, y = cov_rate)) + 
+  geom_boxplot() + geom_hline(yintercept = 0.95) 
+```
+
