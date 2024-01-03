@@ -230,7 +230,7 @@ get_bym2_sdir <- function(direct_est,
 
 ```{r}
 # ACTUAL SIMULATION
-nreps <- 20 # change to length(dat_list)
+nreps <- 100 # change to length(dat_list)
 results <- data.frame(region = c(), 
                       est = c(),
                       var = c(),
@@ -267,25 +267,30 @@ for (i in 1:nreps) {
   
   # GREG estimates
   working_fit <- svyglm(DRYBIO ~ tcc + tnt, sample_des)
-  results <- rbind(results,
-                   get_greg(working_fit, ~DRYBIO, ~SUBSECTION, 
-                            pop_dat, sample_des, CI = 0.95, i))
+  GREG_est <- get_greg(working_fit, ~DRYBIO, ~SUBSECTION, 
+                       pop_dat, sample_des, CI = 0.95, i)
+  results <- rbind(results, GREG_est)
   
   # SMA estimates
   results <- rbind(results, get_bym2_sdir(GREG_est, m333_adj, i))
 }
+
+saveRDS(results, file = "sim_results.rds")
 ```
 
 ```{r}
 # PROCESSING AND PERFORMANCE METRICS
 metrics <- results %>%
   mutate(CI_cov = ifelse(true_val >= lower & true_val <= upper, 1, 0),
-         relative_bias = (est - true_val) / true_val * 100) %>%
+         relative_bias = (est - true_val) / true_val * 100,
+         emp_mse = (est - true_val)^2) %>%
   group_by(method, region) %>%
   summarize(cov_rate = mean(CI_cov),
-            pct_rel_bias = mean(relative_bias))
+            pct_rel_bias = mean(relative_bias),
+            mse = mean(emp_mse),
+            prb_mse = mean((emp_mse - var^2) / var^2 * 100))
 
-# !! need to add empirical MSE and PRB of MSE
+# !! need to check prb mse because it is fishy right now
 ```
 
 ```{r}
@@ -297,5 +302,13 @@ ggplot(metrics, aes(x = method, y = pct_rel_bias)) +
 # confidence interval coverage boxplot
 ggplot(metrics, aes(x = method, y = cov_rate)) + 
   geom_boxplot() + geom_hline(yintercept = 0.95) 
+
+# mse boxplot
+ggplot(metrics, aes(x = method, y = mse)) + 
+  geom_boxplot() + geom_hline(yintercept = 0) 
+
+# percent relative bias mse boxplot
+ggplot(metrics, aes(x = method, y = prb_mse)) + 
+  geom_boxplot() + geom_hline(yintercept = 0) 
 ```
 
