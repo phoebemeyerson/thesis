@@ -228,7 +228,7 @@ get_bym2_sdir <- function(direct_est,
 }
 ```
 
-```{r}
+```{r, verbose = TRUE}
 # ACTUAL SIMULATION
 nreps <- 100 # change to length(dat_list)
 results <- data.frame(region = c(), 
@@ -241,6 +241,7 @@ results <- data.frame(region = c(),
                       true_val = c()) # add SD if needed later
 
 for (i in 1:nreps) {
+  print(i)
   rep_dat <- dat_list[[i]]
   
   # add weights to rep_dat
@@ -275,20 +276,19 @@ for (i in 1:nreps) {
   results <- rbind(results, get_bym2_sdir(GREG_est, m333_adj, i))
 }
 
-saveRDS(results, file = "sim_results.rds")
+# saveRDS(results, file = "sim_results.rds")
 ```
 
 ```{r}
 # PROCESSING AND PERFORMANCE METRICS
 metrics <- results %>%
-  mutate(CI_cov = ifelse(true_val >= lower & true_val <= upper, 1, 0),
-         relative_bias = (est - true_val) / true_val * 100,
-         emp_mse = (est - true_val)^2) %>%
   group_by(method, region) %>%
-  summarize(cov_rate = mean(CI_cov),
-            pct_rel_bias = mean(relative_bias),
-            mse = mean(emp_mse),
-            prb_mse = mean((emp_mse - var^2) / var^2 * 100))
+  mutate(cov_rate = mean(ifelse(true_val >= lower & true_val <= upper, 1, 0)),
+         emp_mean = mean(est),
+         emp_var = mean((est - emp_mean)^2),
+         emp_mse = mean((est - true_val)^2),
+         prb = (emp_mean - true_val) / true_val * 100,
+         prb_var = mean((emp_var - var^2) / var^2 * 100))
 
 # !! need to check prb mse because it is fishy right now
 ```
@@ -296,7 +296,7 @@ metrics <- results %>%
 ```{r}
 # PLOTTING
 # percent relative bias boxplot
-ggplot(metrics, aes(x = method, y = pct_rel_bias)) + 
+ggplot(metrics, aes(x = method, y = prb)) + 
   geom_boxplot() + geom_hline(yintercept = 0)  
 
 # confidence interval coverage boxplot
@@ -304,11 +304,46 @@ ggplot(metrics, aes(x = method, y = cov_rate)) +
   geom_boxplot() + geom_hline(yintercept = 0.95) 
 
 # mse boxplot
-ggplot(metrics, aes(x = method, y = mse)) + 
+ggplot(metrics, aes(x = method, y = emp_mse)) + 
   geom_boxplot() + geom_hline(yintercept = 0) 
 
 # percent relative bias mse boxplot
-ggplot(metrics, aes(x = method, y = prb_mse)) + 
+ggplot(metrics, aes(x = method, y = prb_var)) + 
   geom_boxplot() + geom_hline(yintercept = 0) 
+```
+
+```{r}
+# PRIOR EXPLORATION
+sigma_u <- c(5)
+phi <- c(0.5)
+nr <- 2
+
+prior_res <- data.frame(region = c(), 
+                        est = c(),
+                        var = c(),
+                        lower = c(),
+                        upper = c(),
+                        method = c(),
+                        rep = c(),
+                        true_val = c(),
+                        sigma_u = c(),
+                        phi = c()) 
+
+for (i in sigma_u) {
+  for (j in phi) {
+    for (k in 1:nr) {
+      GREG_est <- results %>%
+        filter(method == "GREG" & rep == k)
+      
+      sma_est <- get_bym2_sdir(GREG_est, m333_adj, k, pc_u = i, pc_u_phi = j)
+      
+      sma_est <- sma_est %>%
+        mutate(sigma_u = rep(i, D),
+               phi = rep(j, D))
+      
+      prior_res <- rbind(prior_res, sma_est)
+    }
+  }
+}
 ```
 
