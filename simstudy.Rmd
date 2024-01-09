@@ -88,6 +88,22 @@ true_est <- truth %>%
   group_by(SUBSECTION) %>%
   summarize(true_val = mean(DRYBIO),
             true_sd = sd(DRYBIO))
+
+wt_list <- list()
+# add weights
+for (i in 1:length(dat_list)) {
+  rep_dat <- dat_list[[i]]
+  # add weights to sample
+  weights.n <- rep_dat %>%
+    group_by(SUBSECTION) %>%
+    count() %>%
+    ungroup() %>%
+    mutate(weights = counts.N$n / n) %>%
+    dplyr::select(SUBSECTION, weights)
+  
+  wt_list[[i]] <- left_join(rep_dat, weights.n, by = "SUBSECTION")
+  print(i)
+}
 ```
 
 ```{r}
@@ -230,7 +246,7 @@ get_bym2_sdir <- function(direct_est,
 
 ```{r, verbose = TRUE}
 # ACTUAL SIMULATION
-nreps <- 100 # change to length(dat_list)
+nreps <- 200 # change to length(dat_list)
 results <- data.frame(region = c(), 
                       est = c(),
                       var = c(),
@@ -242,18 +258,8 @@ results <- data.frame(region = c(),
 
 for (i in 1:nreps) {
   print(i)
-  rep_dat <- dat_list[[i]]
-  
-  # add weights to rep_dat
-  weights.n <- rep_dat %>%
-    group_by(SUBSECTION) %>%
-    count() %>%
-    ungroup() %>%
-    mutate(weights = counts.N$n / n) %>%
-    dplyr::select(SUBSECTION, weights)
-  
-  rep_dat <- left_join(rep_dat, weights.n, by = "SUBSECTION")
-  
+  rep_dat <- wt_list[[i]]
+
   # making sample design
   sample_des <- svydesign(id = ~1,
                           data = rep_dat,
@@ -288,7 +294,10 @@ metrics <- results %>%
          emp_var = mean((est - emp_mean)^2),
          emp_mse = mean((est - true_val)^2),
          prb = (emp_mean - true_val) / true_val * 100,
-         prb_var = mean((emp_var - var^2) / var^2 * 100))
+         prb_var = mean((emp_var - var) / var * 100)) %>%
+  dplyr::select(true_val, cov_rate, emp_mean, 
+                emp_var, emp_mse, prb, prb_var) %>%
+  unique()
 
 # !! need to check prb mse because it is fishy right now
 ```
@@ -315,8 +324,10 @@ ggplot(metrics, aes(x = method, y = prb_var)) +
 ```{r}
 # PRIOR EXPLORATION
 sigma_u <- c(5)
+sigma_u_alpha <- c(0.01)
 phi <- c(0.5)
-nr <- 2
+phi_alpha <- c(1/2, 2/3)
+nr <- 4
 
 prior_res <- data.frame(region = c(), 
                         est = c(),
@@ -326,24 +337,63 @@ prior_res <- data.frame(region = c(),
                         method = c(),
                         rep = c(),
                         true_val = c(),
-                        sigma_u = c(),
-                        phi = c()) 
+                        priors = c()) 
 
-for (i in sigma_u) {
-  for (j in phi) {
-    for (k in 1:nr) {
-      GREG_est <- results %>%
-        filter(method == "GREG" & rep == k)
+for (k in 1:nr) {
+  GREG_est <- results %>%
+    filter(method == "GREG" & rep == k)
+  for (i in sigma_u) {
+    for (j in phi) {
+      for (m in sigma_u_alpha) {
+        for (p in phi_alpha) {
+          sma_est <- get_bym2_sdir(GREG_est, m333_adj, k, 
+                                   pc_u = i, pc_alpha = m,
+                                   pc_u_phi = j, pc_alpha_phi = p)
       
-      sma_est <- get_bym2_sdir(GREG_est, m333_adj, k, pc_u = i, pc_u_phi = j)
-      
-      sma_est <- sma_est %>%
-        mutate(sigma_u = rep(i, D),
-               phi = rep(j, D))
-      
-      prior_res <- rbind(prior_res, sma_est)
+          sma_est <- sma_est %>%
+            mutate(priors = rep(paste(c(i, m, j, p), collapse = "_"), D))
+          
+          prior_res <- rbind(prior_res, sma_est)
+          
+          print(k)
+        }
+      }
     }
   }
 }
+```
+
+```{r}
+# PRIOR EXPLORATION RESULTS
+prior_metrics <- prior_res %>%
+  group_by(region, priors) %>%
+  mutate(cov_rate = mean(ifelse(true_val >= lower & true_val <= upper, 1, 0)),
+         emp_mean = mean(est),
+         emp_var = mean((est - emp_mean)^2),
+         emp_mse = mean((est - true_val)^2),
+         prb = (emp_mean - true_val) / true_val * 100,
+         prb_var = mean((emp_var - var) / var * 100)) %>%
+  dplyr::select(true_val, cov_rate, emp_mean, 
+                emp_var, emp_mse, prb, prb_var) %>%
+  unique()
+```
+
+```{r}
+# PRIOR EXPLORATION RESULTS VISUALIZATION
+# percent relative bias boxplot
+ggplot(prior_metrics, aes(group = priors, y = prb)) + 
+  geom_boxplot() + geom_hline(yintercept = 0)  
+
+# confidence interval coverage boxplot
+ggplot(prior_metrics, aes(group = priors, y = cov_rate)) + 
+  geom_boxplot() + geom_hline(yintercept = 0.95) 
+
+# mse boxplot
+ggplot(prior_metrics, aes(group = priors, y = emp_mse)) + 
+  geom_boxplot() + geom_hline(yintercept = 0) 
+
+# percent relative bias mse boxplot
+ggplot(prior_metrics, aes(group = priors, y = prb_var)) + 
+  geom_boxplot() + geom_hline(yintercept = 0) 
 ```
 
