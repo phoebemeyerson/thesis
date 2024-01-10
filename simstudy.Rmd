@@ -277,9 +277,16 @@ for (i in 1:nreps) {
   GREG_est <- get_greg(working_fit, ~DRYBIO, ~SUBSECTION, 
                        pop_dat, sample_des, CI = 0.95, i)
   results <- rbind(results, GREG_est)
+}
+
+for (i in 1:nreps) {
+  # get GREG estimates
+  GREG_est <- results %>%
+    filter(method == "GREG" & rep == i)
   
   # SMA estimates
   results <- rbind(results, get_bym2_sdir(GREG_est, m333_adj, i))
+  print(i)
 }
 
 # saveRDS(results, file = "sim_results.rds")
@@ -295,7 +302,7 @@ metrics <- results %>%
          emp_mse = mean((est - true_val)^2),
          prb = (emp_mean - true_val) / true_val * 100,
          prb_var = mean((emp_var - var) / var * 100)) %>%
-  dplyr::select(true_val, cov_rate, emp_mean, 
+  dplyr::select(method, region, true_val, cov_rate, emp_mean, 
                 emp_var, emp_mse, prb, prb_var) %>%
   unique()
 
@@ -322,12 +329,39 @@ ggplot(metrics, aes(x = method, y = prb_var)) +
 ```
 
 ```{r}
+# TABLE
+cov_rate_tbl <- metrics %>%
+  filter(!(method == "PS" & region == "M333Cc")) %>%
+  group_by(method) %>%
+  summarize(min = min(cov_rate),
+            median = median(cov_rate),
+            mean = mean(cov_rate),
+            max = max(cov_rate))
+
+prb_tbl <- metrics %>%
+  group_by(method) %>%
+  summarize(min = min(prb),
+            median = median(prb),
+            mean = mean(prb),
+            max = max(prb))
+
+emp_mse_tbl <- metrics %>%
+  group_by(method) %>%
+  summarize(min = min(emp_mse),
+            median = median(emp_mse),
+            mean = mean(emp_mse),
+            max = max(emp_mse))
+
+```
+
+
+```{r}
 # PRIOR EXPLORATION
-sigma_u <- c(5)
-sigma_u_alpha <- c(0.01)
-phi <- c(0.5)
-phi_alpha <- c(1/2, 2/3)
-nr <- 4
+sigma_u <- c(5, 50)
+sigma_u_alpha <- c(0.01, 0.1)
+phi <- c(0.5, 0.9)
+phi_alpha <- c(0.1, 0.5)
+nr <- 20
 
 prior_res <- data.frame(region = c(), 
                         est = c(),
@@ -354,12 +388,11 @@ for (k in 1:nr) {
             mutate(priors = rep(paste(c(i, m, j, p), collapse = "_"), D))
           
           prior_res <- rbind(prior_res, sma_est)
-          
-          print(k)
         }
       }
     }
   }
+  print(k)
 }
 ```
 
@@ -380,20 +413,21 @@ prior_metrics <- prior_res %>%
 
 ```{r}
 # PRIOR EXPLORATION RESULTS VISUALIZATION
+
 # percent relative bias boxplot
-ggplot(prior_metrics, aes(group = priors, y = prb)) + 
+ggplot(prior_metrics, aes(x = priors, y = prb)) + 
   geom_boxplot() + geom_hline(yintercept = 0)  
 
 # confidence interval coverage boxplot
-ggplot(prior_metrics, aes(group = priors, y = cov_rate)) + 
+ggplot(prior_metrics, aes(x = priors, y = cov_rate)) + 
   geom_boxplot() + geom_hline(yintercept = 0.95) 
 
 # mse boxplot
-ggplot(prior_metrics, aes(group = priors, y = emp_mse)) + 
+ggplot(prior_metrics, aes(x = priors, y = emp_mse)) + 
   geom_boxplot() + geom_hline(yintercept = 0) 
 
 # percent relative bias mse boxplot
-ggplot(prior_metrics, aes(group = priors, y = prb_var)) + 
+ggplot(prior_metrics, aes(x = priors, y = prb_var)) + 
   geom_boxplot() + geom_hline(yintercept = 0) 
 ```
 
