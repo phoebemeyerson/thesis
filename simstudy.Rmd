@@ -22,6 +22,7 @@ library(INLA)
 library(tidyverse)
 library(Matrix)
 library(matrixcalc)
+library(stargazer)
 ```
 
 ```{r}
@@ -105,6 +106,62 @@ for (i in 1:length(dat_list)) {
   print(i)
 }
 ```
+
+```{r}
+# EXPLORATORY DATA VISUALIZATIONS
+viz_dat <- wt_list[[1]]
+
+# in general: should i add units to labels
+
+# biomass by tcc and tnt
+ggplot(data = viz_dat, aes(x = tcc, y = DRYBIO, col = factor(tnt))) +
+  geom_point(alpha = 0.2) +
+  geom_smooth(method = "lm") +
+  scale_color_manual(values = c("gold1", "springgreen4"), name = "Tree No-Tree") +
+  labs(x = "Tree Canopy Cover", y = "Dry Biomass") +
+  # facet_wrap(~SUBSECTION) + # option to do or not do this
+  theme_minimal()
+
+# biomass by tnt
+ggplot(data = viz_dat, aes(x = factor(tnt), y = DRYBIO, fill = factor(tnt))) +
+  geom_boxplot(alpha = 0.8) +
+  scale_fill_manual(values = c("gold1", "springgreen4"), name = "TNT") +
+  labs(x = "Tree No-Tree", y = "Biomass") + 
+  # facet_wrap(~SUBSECTION) + # option to do or not do this
+  theme_minimal()
+
+# tcc by tnt
+ggplot(data = viz_dat, aes(x = factor(tnt), y = tcc, fill = factor(tnt))) +
+  geom_boxplot(alpha = 0.8) +
+  scale_fill_manual(values = c("gold1", "springgreen4"), name = "TNT") +
+  labs(x = "Tree No-Tree", y = "Tree Canopy Cover") +
+  # facet_wrap(~SUBSECTION) + # option to do or not do this
+  theme_minimal()
+
+# choosing linear models
+lm0 <- lm(DRYBIO ~ tnt, data = viz_dat)
+lm1 <- lm(DRYBIO ~ tcc, data = viz_dat)
+lm2 <- lm(DRYBIO ~ tcc + tnt, data = viz_dat)
+lm3 <- lm(DRYBIO ~ tcc + tnt + tcc*tnt, data = viz_dat)
+
+stargazer(lm0, lm1, lm2, lm3, type = "text")
+
+# tcc by subsection
+avg_tcc <- viz_dat %>%
+  group_by(SUBSECTION) %>%
+  summarize(avg_tcc = mean(tcc)) %>%
+  select(SUBSECTION, avg_tcc)
+
+maptcc <- left_join(ecomap, avg_tcc, by = join_by(SUBSECTION))
+
+ggplot() +
+  geom_sf(data = maptcc, aes(fill = avg_tcc)) +
+  scale_fill_gradient(low = "gold1", high = "springgreen4", 
+                      name = "Mean TCC") +
+  theme_minimal()
+
+```
+
 
 ```{r}
 # PG FUNCTIONS
@@ -246,7 +303,7 @@ get_bym2_sdir <- function(direct_est,
 
 ```{r, verbose = TRUE}
 # ACTUAL SIMULATION
-nreps <- 200 # change to length(dat_list)
+nreps <- 100 # change to length(dat_list)
 results <- data.frame(region = c(), 
                       est = c(),
                       var = c(),
@@ -301,9 +358,9 @@ metrics <- results %>%
          emp_var = mean((est - emp_mean)^2),
          emp_mse = mean((est - true_val)^2),
          prb = (emp_mean - true_val) / true_val * 100,
-         prb_var = mean((emp_var - var) / var * 100)) %>%
+         prb_mse = mean((emp_mse - var) / var * 100)) %>%
   dplyr::select(method, region, true_val, cov_rate, emp_mean, 
-                emp_var, emp_mse, prb, prb_var) %>%
+                emp_var, emp_mse, prb, prb_mse) %>%
   unique()
 
 # !! need to check prb mse because it is fishy right now
@@ -324,7 +381,7 @@ ggplot(metrics, aes(x = method, y = emp_mse)) +
   geom_boxplot() + geom_hline(yintercept = 0) 
 
 # percent relative bias mse boxplot
-ggplot(metrics, aes(x = method, y = prb_var)) + 
+ggplot(metrics, aes(x = method, y = prb_mse)) + 
   geom_boxplot() + geom_hline(yintercept = 0) 
 ```
 
@@ -357,11 +414,11 @@ emp_mse_tbl <- metrics %>%
 
 ```{r}
 # PRIOR EXPLORATION
-sigma_u <- c(5, 50)
-sigma_u_alpha <- c(0.01, 0.1)
-phi <- c(0.5, 0.9)
-phi_alpha <- c(0.1, 0.5)
-nr <- 20
+sigma_u <- c(0.05, 0.5, 5, 50, 500, 5000)
+sigma_u_alpha <- c(0.01, 0.1, 0.5, 0.9, 0.99)
+phi <- c(0.01, 0.1, 0.5, 0.9, 0.99)
+phi_alpha <- c(0.01, 0.1, 0.5, 0.9, 0.99)
+nr <- 1
 
 prior_res <- data.frame(region = c(), 
                         est = c(),
@@ -371,7 +428,10 @@ prior_res <- data.frame(region = c(),
                         method = c(),
                         rep = c(),
                         true_val = c(),
-                        priors = c()) 
+                        sigma_u = c(),
+                        sigma_u_alpha = c(),
+                        phi = c(),
+                        phi_alpha = c()) 
 
 for (k in 1:nr) {
   GREG_est <- results %>%
@@ -385,7 +445,10 @@ for (k in 1:nr) {
                                    pc_u_phi = j, pc_alpha_phi = p)
       
           sma_est <- sma_est %>%
-            mutate(priors = rep(paste(c(i, m, j, p), collapse = "_"), D))
+            mutate(sigma_u = rep(i, D),
+                   sigma_u_alpha = rep(m, D),
+                   phi = rep(j, D),
+                   phi_alpha = rep(p, D))
           
           prior_res <- rbind(prior_res, sma_est)
         }
@@ -398,6 +461,12 @@ for (k in 1:nr) {
 
 ```{r}
 # PRIOR EXPLORATION RESULTS
+sigs <- prior_res %>%
+  mutate(prb = (est - true_val) / true_val * 100) %>%
+  select(region, est, prb, priors) %>%
+  arrange(region, abs(prb))
+
+
 prior_metrics <- prior_res %>%
   group_by(region, priors) %>%
   mutate(cov_rate = mean(ifelse(true_val >= lower & true_val <= upper, 1, 0)),
@@ -429,5 +498,14 @@ ggplot(prior_metrics, aes(x = priors, y = emp_mse)) +
 # percent relative bias mse boxplot
 ggplot(prior_metrics, aes(x = priors, y = prb_var)) + 
   geom_boxplot() + geom_hline(yintercept = 0) 
+```
+
+```{r}
+# FIRE
+```
+
+```{r}
+# COUNTY
+county_full <- readRDS(here("data/county.rds"))
 ```
 
