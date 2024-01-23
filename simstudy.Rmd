@@ -420,7 +420,7 @@ phi <- c(0.01, 0.1, 0.5, 0.9, 0.99)
 phi_alpha <- c(0.01, 0.1, 0.5, 0.9, 0.99)
 nr <- 1
 
-prior_res <- data.frame(region = c(), 
+prior_res_u <- data.frame(region = c(), 
                         est = c(),
                         var = c(),
                         lower = c(),
@@ -433,30 +433,83 @@ prior_res <- data.frame(region = c(),
                         phi = c(),
                         phi_alpha = c()) 
 
-for (k in 1:nr) {
-  GREG_est <- results %>%
-    filter(method == "GREG" & rep == k)
-  for (i in sigma_u) {
-    for (j in phi) {
-      for (m in sigma_u_alpha) {
-        for (p in phi_alpha) {
-          sma_est <- get_bym2_sdir(GREG_est, m333_adj, k, 
-                                   pc_u = i, pc_alpha = m,
-                                   pc_u_phi = j, pc_alpha_phi = p)
-      
-          sma_est <- sma_est %>%
-            mutate(sigma_u = rep(i, D),
-                   sigma_u_alpha = rep(m, D),
-                   phi = rep(j, D),
-                   phi_alpha = rep(p, D))
-          
-          prior_res <- rbind(prior_res, sma_est)
-        }
-      }
-    }
+for (i in sigma_u) {
+  for (m in sigma_u_alpha) {
+    sma_est <- get_bym2_sdir(GREG_est, m333_adj, k, 
+                         pc_u = i, pc_alpha = m,
+                         pc_u_phi = 0.5, pc_alpha_phi = 2/3)
+
+    sma_est <- sma_est %>%
+      mutate(sigma_u = rep(i, D),
+             sigma_u_alpha = rep(m, D),
+             phi = rep(0.5, D),
+             phi_alpha = rep(0.67, D))
+    prior_res <- rbind(prior_res, sma_est)
+
   }
-  print(k)
 }
+
+aa_priors_u <- prior_res %>%
+  filter(region == "M333Aa") %>%
+  select(est, sigma_u, sigma_u_alpha)
+
+ggplot(aa_priors_u, aes(x = sigma_u, y = est, col = factor(sigma_u_alpha))) +
+  geom_point() +
+  geom_line() +
+  scale_x_log10() +
+  ylim(c(35, 36)) +
+  labs(x = "Marginal Variance Prior",
+       y = "Posterior Biomass Estimate") +
+  scale_color_manual(
+    values = c("firebrick1", "darkorange1", "springgreen2", 
+               "royalblue1", "mediumorchid2"),
+    name = "Variance Probability Prior") +
+  theme_minimal()
+
+prior_res_phi <- data.frame(region = c(), 
+                            est = c(),
+                            var = c(),
+                            lower = c(),
+                            upper = c(),
+                            method = c(),
+                            rep = c(),
+                            true_val = c(),
+                            sigma_u = c(),
+                            sigma_u_alpha = c(),
+                            phi = c(),
+                            phi_alpha = c()) 
+
+for (j in sigma_u) {
+  for (m in sigma_u_alpha) {
+    sma_est <- get_bym2_sdir(GREG_est, m333_adj, k, 
+                         pc_u = 5, pc_alpha = 0.01,
+                         pc_u_phi = j, pc_alpha_phi = m)
+
+    sma_est <- sma_est %>%
+      mutate(sigma_u = rep(5, D),
+             sigma_u_alpha = rep(0.01, D),
+             phi = rep(j, D),
+             phi_alpha = rep(m, D))
+    prior_res_phi <- rbind(prior_res_phi, sma_est)
+
+  }
+}
+
+aa_priors_phi <- prior_res_phi %>%
+  filter(region == "M333Aa") %>%
+  select(est, phi, phi_alpha)
+
+ggplot(aa_priors_phi, aes(x = phi, y = est, col = factor(phi_alpha))) +
+  geom_point() +
+  geom_line() +
+  labs(x = "Spatial Correlation Prior",
+       y = "Posterior Biomass Estimate") +
+  scale_color_manual(
+    values = c("firebrick1", "darkorange1", "springgreen2", 
+               "royalblue1", "mediumorchid2"),
+    name = "Probability Prior") +
+  theme_minimal()
+
 ```
 
 ```{r}
@@ -468,35 +521,45 @@ sigs <- prior_res %>%
 
 
 prior_metrics <- prior_res %>%
-  group_by(region, priors) %>%
+  group_by(region, sigma_u, sigma_u_alpha, phi, phi_alpha) %>%
   mutate(cov_rate = mean(ifelse(true_val >= lower & true_val <= upper, 1, 0)),
          emp_mean = mean(est),
          emp_var = mean((est - emp_mean)^2),
          emp_mse = mean((est - true_val)^2),
          prb = (emp_mean - true_val) / true_val * 100,
-         prb_var = mean((emp_var - var) / var * 100)) %>%
+         prb_mse = mean((emp_mse - var) / var * 100)) %>%
   dplyr::select(true_val, cov_rate, emp_mean, 
-                emp_var, emp_mse, prb, prb_var) %>%
+                emp_var, emp_mse, prb, prb_mse) %>%
   unique()
+
+aa_metrics_u <- prior_metrics %>%
+  filter(region == "M333Aa")
+
+ggplot(aa_metrics_u, aes(x = sigma_u, y = prb, col = factor(sigma_u_alpha))) +
+  geom_point() +
+  geom_line() +
+  scale_x_log10() +
+  ylim(c(-3, 0))
+
 ```
 
 ```{r}
 # PRIOR EXPLORATION RESULTS VISUALIZATION
 
 # percent relative bias boxplot
-ggplot(prior_metrics, aes(x = priors, y = prb)) + 
+ggplot(prior_metrics, aes(x = factor(sigma_u), y = prb)) + 
   geom_boxplot() + geom_hline(yintercept = 0)  
 
 # confidence interval coverage boxplot
-ggplot(prior_metrics, aes(x = priors, y = cov_rate)) + 
+ggplot(prior_metrics, aes(x = factor(sigma_u), y = cov_rate)) + 
   geom_boxplot() + geom_hline(yintercept = 0.95) 
 
 # mse boxplot
-ggplot(prior_metrics, aes(x = priors, y = emp_mse)) + 
+ggplot(prior_metrics, aes(x = factor(sigma_u), y = emp_mse)) + 
   geom_boxplot() + geom_hline(yintercept = 0) 
 
 # percent relative bias mse boxplot
-ggplot(prior_metrics, aes(x = priors, y = prb_var)) + 
+ggplot(prior_metrics, aes(x = factor(sigma_u), y = prb_mse)) + 
   geom_boxplot() + geom_hline(yintercept = 0) 
 ```
 
