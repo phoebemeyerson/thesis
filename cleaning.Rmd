@@ -27,12 +27,10 @@ truth <- readRDS(here("data/simdata.rds")) %>%
                          (tnt == 1) ~ 1)) %>%
   rename(tcc = tcc16)
 
-true_est <- truth %>%
-  group_by(SUBSECTION) %>%
-  summarize(true_val = mean(DRYBIO),
-            true_sd = sd(DRYBIO))
+pop_dat <- truth %>%
+  select(SUBSECTION, DRYBIO, tcc, tnt)
 
-saveRDS(true_est, "true_est.rds")
+saveRDS(pop_dat, "pop_dat.rds")
 
 # adding weights to data
 dat_all_reps <- readRDS(here("data/sample.rds")) %>%

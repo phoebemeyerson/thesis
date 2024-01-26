@@ -1,0 +1,252 @@
+---
+title: "analysis"
+author: "Phoebe Meyerson"
+date: "2024-01-26"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+library(here)
+library(mase)
+library(sf)
+library(sfdep)
+library(survey)
+library(INLA)
+library(tidyverse)
+library(Matrix)
+library(matrixcalc)
+```
+
+```{r}
+# LOADING DATA
+pop_dat <- readRDS(here("pop_dat.rds"))
+data <- readRDS(here("dat_wt.rds"))
+
+prop_tnt <- read_csv(here("data/m333.csv"), show_col_types = FALSE) %>%
+  rename(SUBSECTION = MAP_UNIT_S,
+         tnt0 = tnt.2, tnt1 = tnt.1) %>%
+  dplyr::select(SUBSECTION, tnt0, tnt1, npixels) %>%
+  pivot_longer(cols = !(SUBSECTION | npixels), names_to = "tnt", values_to = "prop") %>%
+  mutate(tnt = parse_number(tnt))
+
+ecomap <- readRDS(here("data/ecomap.rds")) %>%
+  filter(PROVINCE == "M333")
+
+true_est <- pop_dat %>%
+  group_by(SUBSECTION) %>%
+  summarize(true_val = mean(DRYBIO),
+            true_sd = sd(DRYBIO))
+
+dat_list <- data %>%
+  group_by(rep) %>%
+  group_split()
+
+np <- prop_tnt$npixels
+
+prop_split <- prop_tnt %>%
+  group_by(SUBSECTION) %>%
+  group_split()
+
+m333_contig <- st_contiguity(ecomap)
+# m333_contig_sf <- st_as_edges(st_centroid(ecomap$geometry), nb = m333_contig)
+# ggplot() + geom_sf(data = ecomap) +
+#   geom_sf(data = m333_contig_sf) + ggtitle("Contiguous Neighbors")
+
+m333_adj <- wt_as_matrix(m333_contig, st_weights(m333_contig, style = "B"))
+rownames(m333_adj) <- domains
+colnames(m333_adj) <- domains
+
+rm(data, m333_contig, prop_tnt)
+```
+
+```{r}
+# ESTIMATOR FUNCTIONS
+
+# horvitz-thompson estimator
+get_direct <- function(formula, by, sample_des, r, truth, CI = 0.95) {
+  res <- svyby(formula, by, design = sample_des, svymean, na.rm = T)
+  out_dat <- data.frame(
+    region = as.vector(res[[all.vars(by)[1]]]),
+    est = as.vector(model.matrix(formula, res)[, 2]),
+    var = res$se ^ 2) %>% 
+    mutate(
+    lower = est + qnorm((1-CI)/2) * res$se,
+    upper = est + qnorm(1 - (1-CI)/2) * res$se,
+    method = "HT",
+    rep = r,
+    true_val = truth)
+  return(out_dat)
+}
+
+
+# post-stratified estimator
+get_poststrat <- function(samp_list, N, prop_list, domains, r, truth) {
+  out_dat <- data.frame(region = c(), 
+                        est = c(),
+                        var = c(),
+                        lower = c(),
+                        upper = c(),
+                        method = c(),
+                        rep = c(),
+                        true_val = c())
+
+  for (i in 1:length(domains)) {
+    pop_prop_i <- prop_list[[i]] %>% select(tnt, prop)
+    samp_i <- samp_list[[i]]
+
+    PS <- postStrat(y = samp_i$DRYBIO, N = N[i], 
+                        xsample = samp_i$tnt, xpop = pop_prop_i,
+                        datatype = "means", var_est = TRUE,
+                        var_method = "SRSunconditional")
+    PS_est_i <- data.frame(
+      region = domains[i],
+      est = PS$pop_mean,
+      var = PS$pop_mean_var,
+      lower = PS$pop_mean - 1.96*sqrt(PS$pop_mean_var),
+      upper = PS$pop_mean + 1.96*sqrt(PS$pop_mean_var),
+      method = "PS",
+      rep = r,
+      true_val = truth[i]
+    )
+    out_dat <- rbind(out_dat, PS_est_i)
+  }
+  return(out_dat)
+}
+
+# generalized regression estimator
+get_greg <- function(working_fit, formula, by,
+                     pop_dat, sample_des, r, truth, CI = 0.95) {
+  pop_unit_ests <- as.vector(predict(working_fit, pop_dat,
+                                     type = "response")) 
+  area_ests <-
+    aggregate(pop_unit_ests, 
+              list(region = as.vector(pop_dat[[all.vars(by)[1]]])),
+              mean)
+  colnames(area_ests)[2] <- "working_est"
+  sample_des$variables$res <- 
+    sample_des$variables[[all.vars(formula)[1]]] -
+    as.vector(predict(working_fit, sample_des$variables, type = "response")) 
+  sample_des$variables$region <- 
+    as.vector(sample_des$variables[[all.vars(by)[1]]])
+  res_ht <- svyby(~res, ~region, sample_des, svymean)
+  out_dat <- left_join(area_ests, res_ht, by = "region") %>%
+    mutate(est = working_est + res,
+           var = se^2,
+           method = "GREG", 
+           rep = r,
+           lower = est + qnorm((1-CI) / 2) * se,
+           upper = est + qnorm(1- (1 - CI) / 2) * se,
+           true_val = truth) %>%
+    select(region, est, var, lower, upper, method, rep, true_val)
+  return(out_dat)
+}
+
+# spatially smoothed model-assisted estimator
+get_ssma <- function(direct_est, adj_mat, r, truth,
+                     pc_u = 5, pc_alpha = 0.01, 
+                     pc_u_phi = 0.5, pc_alpha_phi = 2/3, CI = .95) {
+  hyperpc_bym_int <- list(
+    prec = list(prior = "pc.prec", param = c(pc_u , pc_alpha)),  
+    phi = list(prior = 'pc', param = c(pc_u_phi , pc_alpha_phi))
+  )
+  sd_dat <- direct_est %>%
+    mutate(est = ifelse(est != 0 & est != 1 & var > 1e-5, est, NA)) %>%
+    mutate(prec = 1 / var,
+           region = match(region, rownames(adj_mat)))
+  sd_fit <-
+    INLA::inla(est ~ f(region, model = "bym2", 
+                       graph = adj_mat, 
+                       hyper = hyperpc_bym_int, 
+                       scale.model = TRUE),
+               family = "gaussian", data = sd_dat, 
+               scale = sd_dat$prec,
+               control.family = 
+                 list(hyper = list(prec = list(initial= log(1), fixed= TRUE))),
+               control.predictor = list(compute = TRUE),
+               control.compute=list(config = TRUE))
+  
+  sd_fit_sample <-
+    inla.posterior.sample(n = 1000, sd_fit,
+                          list(region = 1:nrow(adj_mat), "(Intercept)" = 1))
+  sd_est_mat <-
+    do.call(cbind, lapply(sd_fit_sample,
+                          function(x) x$latent[1:nrow(adj_mat)] +
+                            x$latent[nrow(adj_mat) + 1]))
+  out_dat <- data.frame(region = rownames(adj_mat),
+                        est = rowMeans(sd_est_mat),
+                        var = apply(sd_est_mat, 1, var),
+                        lower = apply(sd_est_mat, 1,
+                                      function(x) quantile(x, (1-CI)/2)),
+                        upper = apply(sd_est_mat, 1,
+                                      function(x) quantile(x, 1-(1-CI)/2)),
+                        method = "SMA",
+                        rep = r,
+                        true_val = truth)
+  return(out_dat)
+}
+
+```
+
+```{r}
+# ACTUAL SIMULATION: HT, PS, GREG
+nreps <- 2 # change to length(dat_list)
+results <- data.frame(region = c(), 
+                      est = c(),
+                      var = c(),
+                      lower = c(),
+                      upper = c(),
+                      method = c(),
+                      rep = c(),
+                      true_val = c()) # add SD if needed later
+
+for (i in 1:nreps) {
+  rep_dat <- dat_list[[i]]
+
+  # pre processing
+  sample_des <- svydesign(id = ~1,
+                          data = rep_dat,
+                          weights = ~weights)
+  
+  rep_split <- rep_dat %>%
+    group_by(SUBSECTION) %>%
+    group_split()
+  
+  fit <- svyglm(DRYBIO ~ tcc + tnt + tcc*tnt, sample_des)
+  
+  # HT estimates
+  results <- rbind(results, get_direct(~DRYBIO, ~SUBSECTION, sample_des, 
+                                       i, true_est$true_val))
+  
+  # PS estimates
+  results <- rbind(results, get_poststrat(rep_split, np, prop_split, 
+                                          domains, i, true_est$true_val))
+  
+  # GREG estimates
+  GREG_est <- get_greg(fit, ~DRYBIO, ~SUBSECTION, 
+                       pop_dat, sample_des, i, true_est$true_val)
+  results <- rbind(results, GREG_est)
+  
+  print(i)
+}
+
+```
+
+```{r}
+# ACTUAL SIMULATION: SSMA
+s <- 1
+e <- 2
+for (i in s:e) {
+  # get GREG estimates
+  GREG_est <- results %>%
+    filter(method == "GREG" & rep == i)
+  
+  # SMA estimates
+  results <- rbind(results, get_ssma(GREG_est, m333_adj, i, true_est$true_val))
+  print(i)
+}
+```
+
