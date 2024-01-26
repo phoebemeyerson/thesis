@@ -1,0 +1,69 @@
+---
+title: "cleaning"
+author: "Phoebe Meyerson"
+date: "2024-01-26"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+library(here)
+library(sf)
+library(sfdep)
+library(tidyverse)
+library(Matrix)
+library(matrixcalc)
+```
+
+```{r}
+# GOAL OF THIS RMD: add weights to data, subset to 1000; dataframe of truth
+
+# truth
+truth <- readRDS(here("data/simdata.rds")) %>%
+  mutate(tnt = case_when((tnt == 2) ~ 0, 
+                         (tnt == 1) ~ 1)) %>%
+  rename(tcc = tcc16)
+
+true_est <- truth %>%
+  group_by(SUBSECTION) %>%
+  summarize(true_val = mean(DRYBIO),
+            true_sd = sd(DRYBIO))
+
+saveRDS(true_est, "true_est.rds")
+
+# adding weights to data
+dat_all_reps <- readRDS(here("data/sample.rds")) %>%
+  mutate(tnt = case_when( # refactor tnt as indicator variable
+    tnt == 1 ~ 1,
+    tnt == 2 ~ 0
+  )) %>%
+  mutate(
+    DOMAIN = SUBSECTION,
+    PROVINCE = "M333"
+  ) %>%
+  rename(tcc = tcc16) %>%
+  filter(rep < 1001)
+
+# calculating N_a for later use in survey weights
+counts.N <- truth %>%
+  group_by(SUBSECTION) %>%
+  count()
+
+# add weights
+wt_mat <- dat_all_reps %>%
+  group_by(SUBSECTION, rep) %>%
+  count() %>%
+  ungroup() %>%
+  mutate(weights = counts.N$n / n) %>%
+  select(SUBSECTION, weights, rep)
+
+df <- merge(dat_all_reps, wt_mat)
+
+df %>% filter(rep == 3)
+
+saveRDS(df, "dat_wt.rds")
+
+```
