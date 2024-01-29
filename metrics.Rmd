@@ -1,0 +1,107 @@
+---
+title: "metrics"
+author: "Phoebe Meyerson"
+date: "2024-01-29"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+library(here)
+library(mase)
+library(sf)
+library(sfdep)
+library(survey)
+library(tidyverse)
+```
+
+```{r}
+results <- readRDS("results1000.rds")
+```
+
+```{r}
+# PROCESSING AND PERFORMANCE METRICS
+metrics <- results %>%
+  group_by(method, region) %>%
+  mutate(cov_rate = mean(ifelse(true_val >= lower & true_val <= upper, 1, 0)),
+         emp_mean = mean(est),
+         emp_var = mean((est - emp_mean)^2),
+         emp_mse = mean((est - true_val)^2),
+         prb = (emp_mean - true_val) / true_val * 100,
+         prb_mse = mean((emp_mse - var) / var * 100)) %>%
+  dplyr::select(method, region, true_val, cov_rate, emp_mean, 
+                emp_var, emp_mse, prb, prb_mse) %>%
+  mutate(method = factor(method, levels = c("HT", "PS", "GREG", "SMA"))) %>%
+  unique()
+```
+
+```{r}
+# PLOTTING
+
+# add gg layer that increases font size
+
+# percent relative bias boxplot
+ggplot(metrics, aes(x = method, y = prb)) + 
+  geom_boxplot() + geom_hline(yintercept = 0) +
+  labs(x = "Method",
+       y = "Percent Relative Bias")
+  theme_minimal(base_size = 14) 
+
+# confidence interval coverage boxplot
+ggplot(metrics, aes(x = method, y = cov_rate)) + 
+  geom_boxplot() + geom_hline(yintercept = 0.95) + 
+  labs(x = "Method",
+       y = "Confidence Interval Coverage")
+  theme_minimal(base_size = 14) 
+
+# mse boxplot
+ggplot(metrics, aes(x = method, y = emp_mse)) + 
+  geom_boxplot() + geom_hline(yintercept = 0) +
+  labs(x = "Method",
+       y = "Empirical Mean Squared Error")
+  theme_minimal(base_size = 14) 
+
+# percent relative bias mse boxplot
+ggplot(metrics, aes(x = method, y = prb_mse)) + 
+  geom_boxplot() + geom_hline(yintercept = 0) +
+  labs(x = "Method",
+       y = "Percent Relative Bias of MSE")
+  theme_minimal(base_size = 14) 
+```
+
+```{r}
+# TABLE
+cov_rate_tbl <- metrics %>%
+  filter(!(method == "PS" & region == "M333Cc")) %>%
+  group_by(method) %>%
+  summarize(min = min(cov_rate),
+            median = median(cov_rate),
+            mean = mean(cov_rate),
+            max = max(cov_rate))
+
+prb_tbl <- metrics %>%
+  group_by(method) %>%
+  summarize(min = min(prb),
+            median = median(prb),
+            mean = mean(prb),
+            max = max(prb))
+
+emp_mse_tbl <- metrics %>%
+  group_by(method) %>%
+  summarize(min = min(emp_mse),
+            median = median(emp_mse),
+            mean = mean(emp_mse),
+            max = max(emp_mse))
+
+prb_mse_tbl <- metrics %>%
+  filter(!(method == "PS" & region == "M333Cc")) %>%
+  group_by(method) %>%
+  summarize(min = min(prb_mse),
+            median = median(prb_mse),
+            mean = mean(prb_mse),
+            max = max(prb_mse))
+
+```

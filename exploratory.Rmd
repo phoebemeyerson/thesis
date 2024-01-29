@@ -1,0 +1,98 @@
+---
+title: "exploratory"
+author: "Phoebe Meyerson"
+date: "2024-01-26"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+library(here)
+library(mapview)
+library(sf)
+library(sfdep)
+library(tidyverse)
+library(Matrix)
+library(matrixcalc)
+library(stargazer)
+```
+
+```{r}
+data <- readRDS(here("dat_wt.rds"))
+
+ecomap <- readRDS(here("data/ecomap.rds")) %>%
+  filter(PROVINCE == "M333")
+
+dat_list <- data %>%
+  group_by(rep) %>%
+  group_split()
+
+viz_dat <- dat_list[[1]]
+
+rm(data, dat_list)
+```
+
+```{r}
+# EXPLORATORY DATA VISUALIZATIONS
+
+# in general: should i add units to labels
+
+# biomass by tcc and tnt - CHECK SQUARED TERM poly(tcc, degree = 2, raw = T)
+# add tcc^2 and tcc*tnt and tcc^2*tnt variables to wt_lists
+# can also try sqrt(biomass)
+# ggsave()
+ggplot(data = viz_dat, aes(x = tcc, y = DRYBIO, col = factor(tnt))) +
+  geom_point(alpha = 0.2) +
+  geom_smooth(method = "lm", formula = y ~ poly(x, 2)) +
+  scale_color_manual(values = c("gold1", "springgreen4"), name = "Tree No-Tree") +
+  labs(x = "Tree Canopy Cover", y = "Dry Biomass") +
+  # facet_wrap(~SUBSECTION) + # option to do or not do this
+  theme_minimal()
+
+# biomass by tnt
+ggplot(data = viz_dat, aes(x = factor(tnt), y = DRYBIO, fill = factor(tnt))) +
+  geom_boxplot(alpha = 0.8) +
+  scale_fill_manual(values = c("gold1", "springgreen4"), name = "TNT") +
+  labs(x = "Tree No-Tree", y = "Biomass") + 
+  # facet_wrap(~SUBSECTION) + # option to do or not do this
+  theme_minimal()
+
+# tcc by tnt
+ggplot(data = viz_dat, aes(x = factor(tnt), y = tcc, fill = factor(tnt))) +
+  geom_boxplot(alpha = 0.8) +
+  scale_fill_manual(values = c("gold1", "springgreen4"), name = "TNT") +
+  labs(x = "Tree No-Tree", y = "Tree Canopy Cover") +
+  # facet_wrap(~SUBSECTION) + # option to do or not do this
+  theme_minimal()
+
+# choosing linear models
+lm0 <- lm(DRYBIO ~ tnt, data = viz_dat)
+lm1 <- lm(DRYBIO ~ tcc, data = viz_dat)
+lm2 <- lm(DRYBIO ~ tcc + tnt, data = viz_dat)
+lm3 <- lm(DRYBIO ~ tcc + tnt + tcc*tnt, data = viz_dat)
+lm4 <- lm(DRYBIO ~ poly(tcc, 2, raw=T) + tnt, data = viz_dat)
+lm5 <- lm(DRYBIO ~ poly(tcc, 2, raw=T) + tnt + tnt*poly(tcc, 2, raw=T), data = viz_dat)
+lm6 <- lm(DRYBIO ~ poly(tcc, 2, raw=T), data = viz_dat)
+lm7 <- lm(DRYBIO ~ tcc^2, data = viz_dat)
+
+stargazer(lm2, lm3, lm4, lm5, lm6, lm7, type = "text")
+
+# tcc by subsection
+avg_tcc <- viz_dat %>%
+  group_by(SUBSECTION) %>%
+  summarize(avg_tcc = mean(tcc)) %>%
+  select(SUBSECTION, avg_tcc)
+
+maptcc <- left_join(ecomap, avg_tcc, by = join_by(SUBSECTION))
+
+ggplot() +
+  geom_sf(data = maptcc, aes(fill = avg_tcc)) +
+  scale_fill_gradient(low = "gold1", high = "springgreen4", 
+                      name = "Mean TCC") +
+  theme_minimal()
+
+```
+

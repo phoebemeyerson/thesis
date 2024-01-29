@@ -1,0 +1,91 @@
+---
+title: "fire"
+author: "Phoebe Meyerson"
+date: "2024-01-28"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+library(here)
+library(mapview)
+library(mase)
+library(sf)
+library(sfdep)
+library(survey)
+library(INLA)
+library(tidyverse)
+library(Matrix)
+library(matrixcalc)
+```
+
+```{r}
+# MAKING THE FIRE
+fire <- st_read("fire_data/fire.shp") %>%
+  filter(ACRES > 4000)
+m333 <- readRDS("data/ecomap.rds") %>%
+  filter(PROVINCE == "M333")
+
+fire <- fire %>% 
+  filter(LATITUDE > 42 & LATITUDE < 49 & 
+           LONGITUDE > -123 & LONGITUDE < -104 & 
+           YEAR == 2021)
+
+# chose thorne creek because within M333 and relatively large
+tc_fire <- fire %>% filter(FIRE_NAME == "THORNE CREEK")
+
+Dc <- m333 %>% filter(SUBSECTION == "M333Dc")
+
+tc_fire_Dc <- st_intersection(tc_fire, Dc) %>% 
+  select(SECTION, SUBSECTION, PROVINCE, geometry) %>%
+  mutate(SUBSECTION = "FIRE")
+
+mapview(tc_fire_Dc) + mapview(Dc)
+
+mapview(st_difference(Dc, tc_fire_Dc))
+
+Dc_new <- st_difference(Dc, tc_fire_Dc) %>%
+  select(SECTION, SUBSECTION, PROVINCE, geometry)
+
+m333_fire <- rbind(rbind(m333 %>% filter(SUBSECTION != "M333Dc"),
+                   tc_fire_Dc), Dc_new)
+mapview(m333_fire)
+```
+
+```{r}
+# loading data
+data <- readRDS(here("dat_wt.rds"))
+
+dat_list <- data %>%
+  group_by(rep) %>%
+  group_split()
+
+# trying to reclassify datapoints into fire section
+
+viz_dat <- dat_list[[1]]
+
+viz_dat_sf <- st_as_sf(viz_dat, coords = c("pixelLon", "pixelLat"))
+viz_dat_sf <- st_set_crs(viz_dat_sf, 4269)
+
+viz_fire <- st_within(viz_dat_sf, m333_fire %>% filter(SUBSECTION == "FIRE"))
+within_rows <- as.data.frame(viz_fire)$row.id
+
+viz_dat[within_rows, ]$SUBSECTION <- "FIRE"
+
+# making new adjacency matrix
+
+m333f_contig <- st_contiguity(m333_fire)
+# m333f_contig_sf <- st_as_edges(st_centroid(m333_fire$geometry), nb = m333f_contig)
+# ggplot() + geom_sf(data = m333_fire) +
+#   geom_sf(data = m333f_contig_sf) + ggtitle("Contiguous Neighbors")
+
+m333_fire_adj <- wt_as_matrix(m333f_contig, st_weights(m333f_contig, style = "B"))
+# need to check whether these rownames are accurate
+rownames(m333_fire_adj) <- unique(viz_dat$SUBSECTION)
+colnames(m333_fire_adj) <- unique(viz_dat$SUBSECTION)
+```
+
+

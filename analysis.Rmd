@@ -167,7 +167,8 @@ get_ssma <- function(direct_est, adj_mat, r, truth,
                control.family = 
                  list(hyper = list(prec = list(initial= log(1), fixed= TRUE))),
                control.predictor = list(compute = TRUE),
-               control.compute=list(config = TRUE))
+               control.compute=list(config = TRUE),
+               safe = TRUE)
   
   sd_fit_sample <-
     inla.posterior.sample(n = 1000, sd_fit,
@@ -232,13 +233,13 @@ for (i in 1:nreps) {
   
   print(i)
 }
-
 ```
 
 ```{r}
 # ACTUAL SIMULATION: SSMA
-s <- 1
-e <- 2
+s <- 976
+e <- 1000
+
 for (i in s:e) {
   # get GREG estimates
   GREG_est <- results %>%
@@ -248,5 +249,6 @@ for (i in s:e) {
   results <- rbind(results, get_ssma(GREG_est, m333_adj, i, true_est$true_val))
   print(i)
 }
+
 ```
 
