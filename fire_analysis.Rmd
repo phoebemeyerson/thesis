@@ -1,7 +1,7 @@
 ---
-title: "analysis"
+title: "fire_analysis"
 author: "Phoebe Meyerson"
-date: "2024-01-26"
+date: "2024-01-31"
 output: html_document
 ---
 
@@ -11,6 +11,7 @@ knitr::opts_chunk$set(echo = TRUE)
 
 ```{r}
 library(here)
+library(mapview)
 library(mase)
 library(sf)
 library(sfdep)
@@ -23,52 +24,68 @@ library(matrixcalc)
 
 ```{r}
 # LOADING DATA
-pop_dat <- readRDS(here("pop_dat.rds"))
-data <- readRDS(here("data/sample.rds"))
+m333_fire <- readRDS("m333_fire.rds")
+data <- readRDS("dat_fire.rds") %>%
+  mutate(tnt = case_when( # refactor tnt as indicator variable
+    tnt == 1 ~ 1,
+    tnt == 2 ~ 0
+  )) %>%
+  mutate(
+    DOMAIN = SUBSECTION,
+    PROVINCE = "M333"
+  ) %>%
+  rename(tcc = tcc16) %>%
+  filter(rep < 1001)
+fire_pop_dat <- readRDS("fire_pop_dat.rds")
 
-prop_tnt <- read_csv(here("data/m333.csv"), show_col_types = FALSE) %>%
-  rename(SUBSECTION = MAP_UNIT_S,
-         tnt0 = tnt.2, tnt1 = tnt.1) %>%
-  dplyr::select(SUBSECTION, tnt0, tnt1, npixels) %>%
-  pivot_longer(cols = !(SUBSECTION | npixels), names_to = "tnt", values_to = "prop") %>%
-  mutate(tnt = parse_number(tnt))
+fire_list <- data %>%
+  group_by(rep) %>%
+  group_split()
 
-ecomap <- readRDS(here("data/ecomap.rds")) %>%
-  filter(PROVINCE == "M333")
+rm(data)
 
-true_est <- pop_dat %>%
+fire_true_est <- fire_pop_dat %>%
   group_by(SUBSECTION) %>%
   summarize(true_val = mean(DRYBIO),
             true_sd = sd(DRYBIO))
 
-dat_list <- data %>%
-  group_by(rep) %>%
-  group_split()
+np <- (fire_pop_dat %>% 
+  group_by(SUBSECTION) %>%
+  count())$n
 
-np <- prop_tnt$npixels
+domains <- unique(fire_true_est$SUBSECTION)
 
-prop_split <- prop_tnt %>%
+fire_prop_tnt <- fire_pop_dat %>%
+  group_by(SUBSECTION) %>%
+  summarize(tnt1 = mean(tnt)) %>%
+  mutate(tnt0 = 1 - tnt1) %>%
+  pivot_longer(cols = !(SUBSECTION), names_to = "tnt", values_to = "prop") %>%
+  mutate(tnt = parse_number(tnt))
+
+fire_prop_split <- fire_prop_tnt %>%
   group_by(SUBSECTION) %>%
   group_split()
 
-m333_contig <- st_contiguity(ecomap)
+# making new adjacency matrix
+m333f_contig <- st_contiguity(m333_fire)
+m333f_contig_sf <- st_as_edges(st_centroid(m333_fire$geometry), nb = m333f_contig)
+ggplot() + geom_sf(data = m333_fire) +
+  geom_sf(data = m333f_contig_sf) + ggtitle("Contiguous Neighbors")
 
-# m333_contig_sf <- st_as_edges(st_centroid(ecomap$geometry), nb = m333_contig)
-# ggplot() + geom_sf(data = ecomap) +
-#   geom_sf(data = m333_contig_sf) + ggtitle("Contiguous Neighbors")
+m333_fire_adj <- wt_as_matrix(m333f_contig, st_weights(m333f_contig, style = "B"))
 
-m333_adj <- wt_as_matrix(m333_contig, st_weights(m333_contig, style = "B"))
-feature_ids <- c("M333Ah", "M333Ag", "M333Ae", "M333Ad", "M333Ab", "M333Aa", "M333Ba", "M333Bb", "M333Bc", "M333Cb", "M333Cc","M333Ca", "M333Cf", "M333Ai", "M333Da", "M333Ac", "M333Cg", "M333Ce", "M333Db", "M333Dd", "M333Ch", "M333De", "M333Dc")
+fire_feature_ids <- c("M333Ah", "M333Ag", "M333Ae", "M333Ad", "M333Ab", "M333Aa", "M333Ba", "M333Bb", "M333Bc", "M333Cb", "M333Cc","M333Ca", "M333Cf", "M333Ai", "M333Da", "M333Ac", "M333Cg", "M333Ce", "M333Db", "M333Dd", "M333Ch", "M333De", "M333DcFIRE", "M333Dc")
 
-rownames(m333_adj) <- feature_ids
-colnames(m333_adj) <- feature_ids
+# need to check whether these rownames are accurate
+rownames(m333_fire_adj) <- fire_feature_ids
+colnames(m333_fire_adj) <- fire_feature_ids
 
-true_est_sma <- true_est %>%
-  mutate(SUBSECTION = factor(SUBSECTION, levels = feature_ids)) %>%
+fire_true_est_sma <- fire_true_est %>%
+  mutate(SUBSECTION = factor(SUBSECTION, levels = fire_feature_ids)) %>%
   arrange(SUBSECTION)
 
-rm(data, m333_contig, prop_tnt)
 ```
+
 
 ```{r}
 # ESTIMATOR FUNCTIONS
@@ -201,8 +218,8 @@ get_ssma <- function(direct_est, adj_mat, r, truth,
 
 ```{r}
 # ACTUAL SIMULATION: HT, PS, GREG
-nreps <- 2 # change to length(dat_list)
-results <- data.frame(region = c(), 
+nreps <- 50 # change to length(dat_list)
+fire_results <- data.frame(region = c(), 
                       est = c(),
                       var = c(),
                       lower = c(),
@@ -212,7 +229,7 @@ results <- data.frame(region = c(),
                       true_val = c()) # add SD if needed later
 
 for (i in 1:nreps) {
-  rep_dat <- dat_list[[i]]
+  rep_dat <- fire_list[[i]]
 
   # pre processing
   sample_des <- svydesign(id = ~1,
@@ -226,17 +243,17 @@ for (i in 1:nreps) {
   fit <- svyglm(DRYBIO ~ tcc + tnt + tcc*tnt, sample_des)
   
   # HT estimates
-  results <- rbind(results, get_direct(~DRYBIO, ~SUBSECTION, sample_des, 
-                                       i, true_est$true_val))
+  fire_results <- rbind(fire_results, get_direct(~DRYBIO, ~SUBSECTION, sample_des, 
+                                       i, fire_true_est$true_val))
   
   # PS estimates
-  results <- rbind(results, get_poststrat(rep_split, np, prop_split, 
-                                          domains, i, true_est$true_val))
+  fire_results <- rbind(fire_results, get_poststrat(rep_split, np, fire_prop_split, 
+                                          domains, i, fire_true_est$true_val))
   
   # GREG estimates
   GREG_est <- get_greg(fit, ~DRYBIO, ~SUBSECTION, 
-                       pop_dat, sample_des, i, true_est$true_val)
-  results <- rbind(results, GREG_est)
+                       fire_pop_dat, sample_des, i, fire_true_est$true_val)
+  fire_results <- rbind(fire_results, GREG_est)
   
   print(i)
 }
@@ -244,18 +261,37 @@ for (i in 1:nreps) {
 
 ```{r}
 # ACTUAL SIMULATION: SSMA
-s <- 976
-e <- 1000
+s <- 26
+e <- 50
+# NEED TO REORDER TRUE VAL TO MATCH FEATURE ID ORDER
 
 for (i in s:e) {
   # get GREG estimates
-  GREG_est <- results %>%
+  GREG_est <- fire_results %>%
     filter(method == "GREG" & rep == i)
   
   # SMA estimates
-  results <- rbind(results, get_ssma(GREG_est, m333_adj, i, true_est_sma$true_val))
+  fire_results <- rbind(fire_results, get_ssma(GREG_est, m333_fire_adj, i, fire_true_est_sma$true_val))
   print(i)
 }
+```
 
+```{r}
+# METRICS 
+# will create separate file once results are larger
+fire_metrics <- fire_results %>%
+  group_by(method, region) %>%
+  mutate(cov_rate = mean(ifelse(true_val >= lower & true_val <= upper, 1, 0)),
+         emp_mean = mean(est),
+         emp_var = mean((est - emp_mean)^2),
+         emp_mse = mean((est - true_val)^2),
+         prb = (emp_mean - true_val) / true_val * 100,
+         prb_mse = mean((emp_mse - var) / var * 100)) %>%
+  dplyr::select(method, region, true_val, cov_rate, emp_mean, 
+                emp_var, emp_mse, prb, prb_mse) %>%
+  mutate(method = factor(method, levels = c("HT", "PS", "GREG", "SMA"))) %>%
+  unique()
+
+fire_metrics %>% filter(region == "M333DcFIRE")
 ```
 

@@ -1,0 +1,120 @@
+---
+title: "fire"
+author: "Phoebe Meyerson"
+date: "2024-01-28"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+library(here)
+library(mapview)
+library(mase)
+library(sf)
+library(sfdep)
+library(survey)
+library(INLA)
+library(tidyverse)
+library(Matrix)
+library(matrixcalc)
+```
+
+```{r}
+# MAKING THE FIRE
+fire <- st_read("fire_data/fire.shp") %>%
+  filter(ACRES > 4000)
+m333 <- readRDS("data/ecomap.rds") %>%
+  filter(PROVINCE == "M333")
+
+fire <- fire %>% 
+  filter(LATITUDE > 42 & LATITUDE < 49 & 
+           LONGITUDE > -123 & LONGITUDE < -104 & 
+           YEAR == 2021)
+
+# chose thorne creek because within M333 and relatively large
+tc_fire <- fire %>% filter(FIRE_NAME == "THORNE CREEK")
+
+Dc <- m333 %>% filter(SUBSECTION == "M333Dc")
+
+tc_fire_Dc <- st_intersection(tc_fire, Dc) %>% 
+  select(SECTION, SUBSECTION, PROVINCE, geometry) %>%
+  mutate(SUBSECTION = "FIRE")
+
+mapview(tc_fire_Dc) + mapview(Dc)
+
+mapview(st_difference(Dc, tc_fire_Dc))
+
+Dc_new <- st_difference(Dc, tc_fire_Dc) %>%
+  select(SECTION, SUBSECTION, PROVINCE, geometry)
+
+m333_fire <- rbind(rbind(m333 %>% filter(SUBSECTION != "M333Dc"),
+                   tc_fire_Dc), Dc_new)
+mapview(m333_fire)
+
+saveRDS(m333_fire, "m333_fire.rds")
+
+feature_ids <- c("M333Ah", "M333Ag", "M333Ae", "M333Ad", "M333Ab", "M333Aa", "M333Ba", "M333Bb", "M333Bc", "M333Cb", "M333Cc","M333Ca", "M333Cf", "M333Ai", "M333Da", "M333Ac", "M333Cg", "M333Ce", "M333Db", "M333Dd", "M333Ch", "M333De", "M333DcFIRE", "M333Dc")
+```
+
+```{r}
+# CHANGING SAMPLE AND TRUTH SUBSECTIONS TO INCLUDE FIRE
+data <- readRDS(here("data/sample.rds")) %>%
+  filter(rep < 1000)
+
+data_sf <- st_as_sf(data, coords = c("pixelLon", "pixelLat"))
+data_sf <- st_set_crs(data_sf, 4269)
+
+dat_fire <- st_within(data_sf, m333_fire %>% filter(SUBSECTION == "FIRE"))
+within_rows <- as.data.frame(dat_fire)$row.id
+
+data[within_rows, ]$SUBSECTION <- "M333DcFIRE"
+
+rm(data_sf, dat_fire)
+
+truth <- readRDS(here("data/simdata.rds")) %>%
+  mutate(tnt = case_when((tnt == 2) ~ 0, 
+                         (tnt == 1) ~ 1)) %>%
+  rename(tcc = tcc16)
+
+truth_sf <- st_as_sf(truth, coords = c("pixelLon", "pixelLat"))
+truth_sf <- st_set_crs(truth_sf, 4269)
+
+truth_fire <- st_within(truth_sf, m333_fire %>% filter(SUBSECTION == "FIRE"))
+rm(truth_sf)
+
+within_rows <- as.data.frame(truth_fire)$row.id
+
+truth[within_rows, ]$SUBSECTION <- "M333DcFIRE"
+
+rm(truth_fire)
+
+```
+
+```{r}
+# ADDING WEIGHTS TO FIRE DATA
+fire_counts.N <- truth %>%
+  group_by(SUBSECTION) %>%
+  count()
+
+wt_mat <- data %>%
+  group_by(SUBSECTION, rep) %>%
+  count() %>%
+  ungroup() %>%
+  mutate(weights = counts.N$n / n) %>%
+  select(SUBSECTION, weights, rep)
+
+df <- merge(data, wt_mat) %>%
+  filter(rep < 1000)
+rm(data, wt_mat)
+
+fire_pop_dat <- truth %>%
+  select(SUBSECTION, DRYBIO, tcc, tnt)
+
+saveRDS(df, "dat_fire.rds")
+saveRDS(fire_pop_dat, "fire_pop_dat.rds")
+```
+
+
