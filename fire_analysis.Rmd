@@ -293,5 +293,24 @@ fire_metrics <- fire_results %>%
   unique()
 
 fire_metrics %>% filter(region == "M333DcFIRE")
+
+ggplot(fire_results, aes(x = method, y = est)) +
+  geom_boxplot()
+
+moreres <- fire_results %>% 
+  filter(region == "M333DcFIRE") %>%
+  group_by(method) %>%
+  mutate(emp_mean = mean(est),
+         method = factor(method, levels = c("HT", "PS", "GREG", "SMA"))) 
+
+dcfire_true <- (fire_true_est %>% filter(SUBSECTION == "M333DcFIRE"))$true_val
+dc_true <- (fire_true_est %>% filter(SUBSECTION == "M333Dc"))$true_val
+
+ggplot(moreres, aes(x = method, y = est)) +
+  geom_boxplot() +
+  geom_hline(yintercept = dcfire_true, col = "hotpink", lwd = 1.2) +
+  geom_hline(yintercept = dc_true, col = "darkblue", lwd = 1.2, linetype = "dashed") +
+  theme_minimal()
+
 ```
 

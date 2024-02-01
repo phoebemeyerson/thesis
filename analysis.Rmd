@@ -24,7 +24,7 @@ library(matrixcalc)
 ```{r}
 # LOADING DATA
 pop_dat <- readRDS(here("pop_dat.rds"))
-data <- readRDS(here("data/sample.rds"))
+data <- readRDS(here("dat_wt.rds"))
 
 prop_tnt <- read_csv(here("data/m333.csv"), show_col_types = FALSE) %>%
   rename(SUBSECTION = MAP_UNIT_S,
@@ -58,7 +58,7 @@ m333_contig <- st_contiguity(ecomap)
 #   geom_sf(data = m333_contig_sf) + ggtitle("Contiguous Neighbors")
 
 m333_adj <- wt_as_matrix(m333_contig, st_weights(m333_contig, style = "B"))
-feature_ids <- c("M333Ah", "M333Ag", "M333Ae", "M333Ad", "M333Ab", "M333Aa", "M333Ba", "M333Bb", "M333Bc", "M333Cb", "M333Cc","M333Ca", "M333Cf", "M333Ai", "M333Da", "M333Ac", "M333Cg", "M333Ce", "M333Db", "M333Dd", "M333Ch", "M333De", "M333Dc")
+feature_ids <- c("M333Ah", "M333Ag", "M333Ae", "M333Ad", "M333Ab", "M333Aa", "M333Ba", "M333Bb", "M333Bc", "M333Cb", "M333Cc","M333Ca", "M333Cf", "M333Ai", "M333Da", "M333Ac", "M333Dc", "M333Cg", "M333Ce", "M333Db", "M333Dd", "M333Ch", "M333De")
 
 rownames(m333_adj) <- feature_ids
 colnames(m333_adj) <- feature_ids
@@ -244,8 +244,8 @@ for (i in 1:nreps) {
 
 ```{r}
 # ACTUAL SIMULATION: SSMA
-s <- 976
-e <- 1000
+s <- 76
+e <- 100
 
 for (i in s:e) {
   # get GREG estimates

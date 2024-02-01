@@ -104,4 +104,14 @@ prb_mse_tbl <- metrics %>%
             mean = mean(prb_mse),
             max = max(prb_mse))
 
+cov_rate_tbl; prb_tbl; emp_mse_tbl; prb_mse_tbl
 ```
+
+```{r}
+# EXPLORING OUTLIERS
+
+# what's going on with HT PRB outliers
+results %>% filter(method == "HT" & region == "M333Ah")
+metrics %>% filter(method == "HT" & region == "M333Ah")
+```
+
