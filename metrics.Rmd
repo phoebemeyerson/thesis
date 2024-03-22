@@ -31,45 +31,52 @@ metrics <- results %>%
          emp_var = mean((est - emp_mean)^2),
          emp_mse = mean((est - true_val)^2),
          prb = (emp_mean - true_val) / true_val * 100,
-         prb_mse = mean((emp_mse - var) / var * 100)) %>%
+         prb_mse = mean(var - emp_mse) / emp_mse * 100) %>%
   dplyr::select(method, region, true_val, cov_rate, emp_mean, 
                 emp_var, emp_mse, prb, prb_mse) %>%
-  mutate(method = factor(method, levels = c("HT", "PS", "GREG", "SMA"))) %>%
+  mutate(method = factor(method, levels = c("HT", "PS", "GREG", "SMA")),
+         method = fct_recode(method, "SSMA" = "SMA")) %>%
   unique()
 ```
 
 ```{r}
 # PLOTTING
-
+method_colors = c("lightskyblue1", "palegreen", "cadetblue1", "darkolivegreen2")
 # add gg layer that increases font size
 
 # percent relative bias boxplot
-ggplot(metrics, aes(x = method, y = prb)) + 
+prb_boxplot <- ggplot(metrics, aes(x = method, y = prb)) + 
   geom_boxplot() + geom_hline(yintercept = 0) +
   labs(x = "Method",
-       y = "Percent Relative Bias")
+       y = "Percent Relative Bias") +
   theme_minimal(base_size = 14) 
 
 # confidence interval coverage boxplot
-ggplot(metrics, aes(x = method, y = cov_rate)) + 
+ci_cov_boxplot <- ggplot(metrics, aes(x = method, y = cov_rate)) + 
   geom_boxplot() + geom_hline(yintercept = 0.95) + 
   labs(x = "Method",
-       y = "Confidence Interval Coverage")
+       y = "Confidence Interval Coverage") +
   theme_minimal(base_size = 14) 
 
 # mse boxplot
-ggplot(metrics, aes(x = method, y = emp_mse)) + 
+mse_boxplot <- ggplot(metrics, aes(x = method, y = emp_mse)) + 
   geom_boxplot() + geom_hline(yintercept = 0) +
   labs(x = "Method",
-       y = "Empirical Mean Squared Error")
+       y = "Empirical Mean Squared Error") +
   theme_minimal(base_size = 14) 
 
 # percent relative bias mse boxplot
-ggplot(metrics, aes(x = method, y = prb_mse)) + 
+prb_mse_boxplot <- ggplot(metrics, aes(x = method, y = prb_mse)) + 
   geom_boxplot() + geom_hline(yintercept = 0) +
   labs(x = "Method",
-       y = "Percent Relative Bias of MSE")
+       y = "Percent Relative Bias of MSE") +
   theme_minimal(base_size = 14) 
+  
+ggsave("prb_basic.png", prb_boxplot)
+ggsave("ci_cov_basic.png", ci_cov_boxplot)
+ggsave("mse_basic.png", mse_boxplot)
+ggsave("prb_mse_basic.png", prb_mse_boxplot)
+
 ```
 
 ```{r}
@@ -111,7 +118,126 @@ cov_rate_tbl; prb_tbl; emp_mse_tbl; prb_mse_tbl
 # EXPLORING OUTLIERS
 
 # what's going on with HT PRB outliers
-results %>% filter(method == "HT" & region == "M333Ah")
+Ah <- results %>% filter(region == "M333Ah")
+AhHT <- results %>% filter(region == "M333Ah" & method == "HT") %>%
+  arrange(desc(est))
 metrics %>% filter(method == "HT" & region == "M333Ah")
-```
+metrics %>% filter(method == "PS" & region == "M333Ah")
+
+# mess
+ggplot(Ah, aes(x = method, y = est)) +
+  geom_boxplot() + geom_hline(yintercept = 12.66095)
+
+Ah_sfG <- st_set_crs(st_as_sf(dat_list[[292]] %>% filter(SUBSECTION == "M333Ah"), coords = c("pixelLon", "pixelLat")), 4269)
+Ah_sfB <- st_set_crs(st_as_sf(dat_list[[36]] %>% filter(SUBSECTION == "M333Ah"), coords = c("pixelLon", "pixelLat")), 4269)
+
+mapview(Ah_sfG, zcol = "DRYBIO")
+mapview(Ah_sfB, zcol = "DRYBIO")
+
+# zero inflation
+prop0 <- truth %>%
+  group_by(SUBSECTION) %>%
+  filter(DRYBIO == 0) %>%
+  count()
+
+prop0$zeros <- prop0$n
+
+prop0 <- prop0 %>% select(SUBSECTION, zeros)
+
+prop0 <- merge(prop0, counts.N) %>%
+  mutate(prop = zeros / n)
+
+prop0 %>% arrange(desc(prop)) # most zeros are Bc Ai Ah, then Cf Cg Ch
+counts.N %>% arrange(desc(n)) # smallest are Cc Ch Cf
+true_est %>% arrange(desc(true_val)) # fewest compatible w most zeros
+
+# looking at metrics
+metrics %>% filter(region == "M333Bc" | region == "M333Ai" | region == "M333Ah")
+metrics %>% filter(method == "HT") %>%
+  arrange(desc(prb)) # HT does poorly w M333Ah, M333Ac, M333Cg (M333Bc has low prb but high absolute prb mse)
+# best in Ag
+
+metrics %>% filter(method == "PS") %>%
+  arrange(desc(prb)) # PS does poorly w M333Aa, M333Ah, M333Bc, M333Ac, De (no var est for M333Cc)
+# best in Ab, Dd, Db
+
+metrics %>% filter(method == "GREG") %>%
+  arrange(desc(prb_mse)) # GREG does poorly wrt prb_mse wit
+# best in Ag, Db, Ah
+
+metrics %>% filter(method == "SSMA") %>%
+  arrange(desc(prb_mse)) # SSMA does poorly w M333Ai, M333Da, Cc, Ca
+# best in Bb, Ac, Bc
+
+# mapping db
+truth_drybio <- readRDS("pop_dat.rds") %>%
+  group_by(SUBSECTION) %>%
+  summarize(mean_db = mean(DRYBIO),
+            var_db = var(DRYBIO))
+
+map_db_truth <- left_join(ecomap, truth_drybio, by = join_by(SUBSECTION))
+
+truth_drybio_no0 <-readRDS("pop_dat.rds") %>%
+  filter(DRYBIO != 0) %>%
+  group_by(SUBSECTION) %>%
+  summarize(mean_db = mean(DRYBIO),
+            var_db = var(DRYBIO))
+
+map_no0_truth <- left_join(ecomap, truth_drybio_no0, by = join_by(SUBSECTION))
+
+mapview(map_db_truth, zcol = "var_db")
+mapview(map_db_truth, zcol = "mean_db")
+a
+mapview(maptcc_truth, zcol = "mean_tcc")
+
+mapview(map_no0_truth, zcol = "mean_db")
+
+# subsections messed up by zeros: Bc, Ai, Ah ... Cf, Cg, Ch
+# subsections messed up by small sample size: Cc
+# subsections with high tcc variance: Ac, Bc
+# subsections with high db variance: Dd, Da
+
+# what's going on in zero regions
+Ah <- truth %>% filter(SUBSECTION == "M333Ah")
+
+Ah %>% 
+  group_by(HEXID) %>%
+  summarize(mean_db = mean(DRYBIO),
+            var_db = var(DRYBIO))
+
+Ah0 <- Ah %>%
+  group_by(HEXID) %>%
+  filter(DRYBIO == 0) %>%
+  count()
+
+Ah0$zero <- Ah0$n
+
+Ahn <- Ah %>% group_by(HEXID) %>%
+  count()
+
+Ah0$N <- Ahn$n[Ahn$HEXID %in% Ah0$HEXID]
+
+Ahzero <- Ah0 %>% mutate(prop0 = n/N)
+
+Ai <- truth %>% filter(SUBSECTION == "M333Ai")
+
+Ai %>% 
+  group_by(HEXID) %>%
+  summarize(mean_db = mean(DRYBIO),
+            var_db = var(DRYBIO))
+
+Ai0 <- Ai %>%
+  group_by(HEXID) %>%
+  filter(DRYBIO == 0) %>%
+  count()
+
+Ain <- Ai %>% group_by(HEXID) %>%
+  count()
+
+Ai0$N <- Ain$n[Ain$HEXID %in% Ai0$HEXID]
+
+Aizero <- Ai0 %>% mutate(prop0 = n/N)
+
+summary(Ahzero$prop0); summary(Aizero$prop0)
+``` 
 

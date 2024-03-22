@@ -29,19 +29,20 @@ fire <- st_read("fire_data/fire.shp") %>%
 m333 <- readRDS("data/ecomap.rds") %>%
   filter(PROVINCE == "M333")
 
-fire <- fire %>% 
+firebig <- fire %>% 
   filter(LATITUDE > 42 & LATITUDE < 49 & 
-           LONGITUDE > -123 & LONGITUDE < -104 & 
-           YEAR == 2021)
+           LONGITUDE > -123 & LONGITUDE < -104 &
+           ACRES > 30000)
+mapview(firebig) + mapview(m333)
 
-# chose thorne creek because within M333 and relatively large
+# thorne creek (in M333Dc, mid tcc mid variance)
 tc_fire <- fire %>% filter(FIRE_NAME == "THORNE CREEK")
-
+mapview(tc_fire)
 Dc <- m333 %>% filter(SUBSECTION == "M333Dc")
 
 tc_fire_Dc <- st_intersection(tc_fire, Dc) %>% 
   select(SECTION, SUBSECTION, PROVINCE, geometry) %>%
-  mutate(SUBSECTION = "FIRE")
+  mutate(SUBSECTION = "THORNEFIRE")
 
 mapview(tc_fire_Dc) + mapview(Dc)
 
@@ -52,27 +53,122 @@ Dc_new <- st_difference(Dc, tc_fire_Dc) %>%
 
 m333_fire <- rbind(rbind(m333 %>% filter(SUBSECTION != "M333Dc"),
                    tc_fire_Dc), Dc_new)
+
+mapview(m333_fire)
+
+# whitmore (mostly in M333Ah, low tcc low variance)
+whit_fire <- fire %>% filter(FIRE_NAME == "WHITMORE" & YEAR == 2021)
+mapview(whit_fire)
+Ah <- m333 %>% filter(SUBSECTION == "M333Ah")
+
+whit_fire_Ah <- st_intersection(whit_fire, Ah) %>%
+  select(SECTION, SUBSECTION, PROVINCE, geometry) %>%
+  mutate(SUBSECTION = "WHITFIRE")
+
+Ah_new <- st_difference(Ah, whit_fire) %>%
+  select(SECTION, SUBSECTION, PROVINCE, geometry)
+
+m333_fire <- rbind(rbind(m333_fire %>% filter(SUBSECTION != "M333Ah"),
+                   whit_fire_Ah), Ah_new)
+mapview(m333_fire)
+
+# carpenter rd (Ad and Ae)
+carp_fire <- fire %>% filter(FIRE_NAME == "CARPENTER RD.") %>%
+  mutate(SECTION = "M333A",
+         SUBSECTION = "CARPFIRE", 
+         PROVINCE = "M333") %>%
+  select(SECTION, SUBSECTION, PROVINCE, geometry)
+Ad_new <- st_difference((m333 %>% filter(SUBSECTION == "M333Ad")), carp_fire) %>%
+  select(SECTION, SUBSECTION, PROVINCE, geometry)
+Ae_new <- st_difference((m333 %>% filter(SUBSECTION == "M333Ae")), carp_fire) %>%
+  select(SECTION, SUBSECTION, PROVINCE, geometry)
+mapview(Ad_new) + mapview(Ae_new) + mapview(carp_fire)
+m333_fire <- rbind(rbind(rbind(m333_fire %>% filter(SUBSECTION != "M333Ad" & 
+                                                SUBSECTION != "M333Ae"),
+                         carp_fire), Ad_new), Ae_new)
+
+# chippy creek (Bb and Bc)
+chip_fire <- fire %>% filter(FIRE_NAME == "CHIPPY CREEK") %>%
+  mutate(SECTION = "M333B",
+         SUBSECTION = "CHIPFIRE", 
+         PROVINCE = "M333") %>%
+  select(SECTION, SUBSECTION, PROVINCE, geometry)
+Bb_new <- st_difference((m333 %>% filter(SUBSECTION == "M333Bb")), chip_fire) %>%
+  select(SECTION, SUBSECTION, PROVINCE, geometry)
+Bc_new <- st_difference((m333 %>% filter(SUBSECTION == "M333Bc")), chip_fire) %>%
+  select(SECTION, SUBSECTION, PROVINCE, geometry)
+m333_fire <- rbind(rbind(rbind(m333_fire %>% filter(SUBSECTION != "M333Bb" & 
+                                                SUBSECTION != "M333Bc"),
+                         chip_fire), Bb_new), Bc_new)
 mapview(m333_fire)
 
 saveRDS(m333_fire, "m333_fire.rds")
 
-feature_ids <- c("M333Ah", "M333Ag", "M333Ae", "M333Ad", "M333Ab", "M333Aa", "M333Ba", "M333Bb", "M333Bc", "M333Cb", "M333Cc","M333Ca", "M333Cf", "M333Ai", "M333Da", "M333Ac", "M333Cg", "M333Ce", "M333Db", "M333Dd", "M333Ch", "M333De", "M333DcFIRE", "M333Dc")
+feature_ids <- c("M333Ag", "M333Ab", "M333Aa", "M333Ba", "M333Cb", "M333Cc","M333Ca", "M333Cf", "M333Ai", "M333Da", "M333Ac", "M333Cg", "M333Ce", "M333Db", "M333Dd", "M333Ch", "M333De", "THORNEFIRE", "M333Dc", "WHITFIRE", "M333Ah", "CARPFIRE", "M333Ad", "M333Ae", "CHIPFIRE", "M333Bb", "M333Bc")
+
+# other fires: Chippy creek (2007, 95000 acres), Moose (2001, 73000 acres), Carpenter Rd. (2015, 62000 acres)
+```
+
+```{r}
+# deceitful (mostly in M333Da, high tcc low variance)
+# deceit_fire <- fire %>% filter(FIRE_NAME == "DECEITFUL")
+# Da <- m333 %>% filter(SUBSECTION == "M333Da")
+# 
+# deceit_fire_Da <- st_intersection(deceit_fire, Da) %>%
+#   select(SECTION, SUBSECTION, PROVINCE, geometry) %>%
+#   mutate(SUBSECTION = "M333DaFIRE")
+# 
+# mapview(st_difference(Da, deceit_fire)) + mapview(deceit_fire_Da)
+# 
+# Da_new <- st_difference(Da, deceit_fire) %>%
+#   select(SECTION, SUBSECTION, PROVINCE, geometry)
+# 
+# m333_fire <- rbind(rbind(m333_fire %>% filter(SUBSECTION != "M333Da"),
+#                    deceit_fire_Da), Da_new)
+
+# # moose (Ca, Cb, and Cc)
+# moose_fire <- fire %>% filter(FIRE_NAME == "MOOSE")
+# mapview(m333) + mapview(moose_fire)
+# 
+# mapview(m333_fire)
+
 ```
 
 ```{r}
 # CHANGING SAMPLE AND TRUTH SUBSECTIONS TO INCLUDE FIRE
 data <- readRDS(here("data/sample.rds")) %>%
-  filter(rep < 1000)
+  filter(rep < 1001)
 
 data_sf <- st_as_sf(data, coords = c("pixelLon", "pixelLat"))
 data_sf <- st_set_crs(data_sf, 4269)
 
-dat_fire <- st_within(data_sf, m333_fire %>% filter(SUBSECTION == "FIRE"))
-within_rows <- as.data.frame(dat_fire)$row.id
+dat_thorne <- st_within(data_sf, m333_fire %>% filter(SUBSECTION == "THORNEFIRE"))
+thorne_within_rows <- as.data.frame(dat_thorne)$row.id
 
-data[within_rows, ]$SUBSECTION <- "M333DcFIRE"
+data[thorne_within_rows, ]$SUBSECTION <- "THORNEFIRE"
 
-rm(data_sf, dat_fire)
+rm(dat_thorne)
+
+dat_whit <- st_within(data_sf, m333_fire %>% filter(SUBSECTION == "WHITFIRE"))
+whit_within_rows <- as.data.frame(dat_whit)$row.id
+
+data[whit_within_rows, ]$SUBSECTION <- "WHITFIRE"
+
+rm(dat_whit)
+
+dat_carp <- st_within(data_sf, m333_fire %>% filter(SUBSECTION == "CARPFIRE"))
+carp_within_rows <- as.data.frame(dat_carp)$row.id
+
+data[carp_within_rows, ]$SUBSECTION <- "CARPFIRE"
+
+rm(dat_carp)
+
+dat_chip <- st_within(data_sf, m333_fire %>% filter(SUBSECTION == "CHIPFIRE"))
+chip_within_rows <- as.data.frame(dat_chip)$row.id
+
+data[chip_within_rows, ]$SUBSECTION <- "CHIPFIRE"
+
+rm(dat_chip, data_sf)
 
 truth <- readRDS(here("data/simdata.rds")) %>%
   mutate(tnt = case_when((tnt == 2) ~ 0, 
@@ -82,14 +178,25 @@ truth <- readRDS(here("data/simdata.rds")) %>%
 truth_sf <- st_as_sf(truth, coords = c("pixelLon", "pixelLat"))
 truth_sf <- st_set_crs(truth_sf, 4269)
 
-truth_fire <- st_within(truth_sf, m333_fire %>% filter(SUBSECTION == "FIRE"))
-rm(truth_sf)
+truth_thorne <- st_within(truth_sf, m333_fire %>% filter(SUBSECTION == "THORNEFIRE"))
+thorne_rows <- as.data.frame(truth_thorne)$row.id
+truth[thorne_rows, ]$SUBSECTION <- "THORNEFIRE"
+rm(truth_thorne)
 
-within_rows <- as.data.frame(truth_fire)$row.id
+truth_whit <- st_within(truth_sf, m333_fire %>% filter(SUBSECTION == "WHITFIRE"))
+whit_rows <- as.data.frame(truth_whit)$row.id
+truth[whit_rows, ]$SUBSECTION <- "WHITFIRE"
+rm(truth_whit)
 
-truth[within_rows, ]$SUBSECTION <- "M333DcFIRE"
+truth_carp <- st_within(truth_sf, m333_fire %>% filter(SUBSECTION == "CARPFIRE"))
+carp_rows <- as.data.frame(truth_carp)$row.id
+truth[carp_rows, ]$SUBSECTION <- "CARPFIRE"
+rm(truth_carp)
 
-rm(truth_fire)
+truth_chip <- st_within(truth_sf, m333_fire %>% filter(SUBSECTION == "CHIPFIRE"))
+chip_rows <- as.data.frame(truth_chip)$row.id
+truth[chip_rows, ]$SUBSECTION <- "CHIPFIRE"
+rm(truth_chip, truth_sf)
 
 ```
 
@@ -103,15 +210,17 @@ wt_mat <- data %>%
   group_by(SUBSECTION, rep) %>%
   count() %>%
   ungroup() %>%
-  mutate(weights = counts.N$n / n) %>%
+  mutate(weights = fire_counts.N$n / n) %>%
   select(SUBSECTION, weights, rep)
 
 df <- merge(data, wt_mat) %>%
-  filter(rep < 1000)
+  filter(rep < 1001)
 rm(data, wt_mat)
 
 fire_pop_dat <- truth %>%
   select(SUBSECTION, DRYBIO, tcc, tnt)
+
+rm(truth)
 
 saveRDS(df, "dat_fire.rds")
 saveRDS(fire_pop_dat, "fire_pop_dat.rds")

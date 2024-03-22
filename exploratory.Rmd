@@ -40,25 +40,27 @@ rm(data, dat_list)
 
 # in general: should i add units to labels
 
-# biomass by tcc and tnt - CHECK SQUARED TERM poly(tcc, degree = 2, raw = T)
-# add tcc^2 and tcc*tnt and tcc^2*tnt variables to wt_lists
-# can also try sqrt(biomass)
+# tell people in writeup that we didn't include tnt bc it didn't vary
 # ggsave()
-ggplot(data = viz_dat, aes(x = tcc, y = DRYBIO, col = factor(tnt))) +
-  geom_point(alpha = 0.2) +
-  geom_smooth(method = "lm", formula = y ~ poly(x, 2)) +
-  scale_color_manual(values = c("gold1", "springgreen4"), name = "Tree No-Tree") +
-  labs(x = "Tree Canopy Cover", y = "Dry Biomass") +
+scatter <- ggplot(data = viz_dat, aes(x = tcc, y = DRYBIO)) +
+  geom_point(alpha = 0.2, col = "springgreen4") +
+  geom_smooth(method = "lm", formula = y ~ poly(x, 2), 
+              col = "darkgreen", lwd = 1.2) +
+  labs(x = "Tree Canopy Cover (%)", y = "Dry Biomass (Tons)") +
   # facet_wrap(~SUBSECTION) + # option to do or not do this
-  theme_minimal()
+  theme_minimal(base_size = 14)
+
+ggsave("scatter.png", scatter)
 
 # biomass by tnt
-ggplot(data = viz_dat, aes(x = factor(tnt), y = DRYBIO, fill = factor(tnt))) +
-  geom_boxplot(alpha = 0.8) +
-  scale_fill_manual(values = c("gold1", "springgreen4"), name = "TNT") +
-  labs(x = "Tree No-Tree", y = "Biomass") + 
-  # facet_wrap(~SUBSECTION) + # option to do or not do this
-  theme_minimal()
+tnt_biomass <- ggplot(data = viz_dat, aes(x = factor(tnt), y = DRYBIO, fill = factor(tnt))) +
+  geom_boxplot(alpha = 0.8, fill = c("gold1", "springgreen4")) +
+  scale_x_discrete(labels = c("No Tree", "Tree")) +
+  labs(x = "Tree Presence", y = "Dry Biomass (Tons)") + 
+  guides(fill = FALSE) +
+  theme_minimal(base_size = 14)
+
+ggsave("tnt_biomass.png", tnt_biomass)
 
 # tcc by tnt
 ggplot(data = viz_dat, aes(x = factor(tnt), y = tcc, fill = factor(tnt))) +
@@ -83,16 +85,50 @@ stargazer(lm2, lm3, lm4, lm5, lm6, lm7, type = "text")
 # tcc by subsection
 avg_tcc <- viz_dat %>%
   group_by(SUBSECTION) %>%
-  summarize(avg_tcc = mean(tcc)) %>%
-  select(SUBSECTION, avg_tcc)
+  summarize(avg_tcc = mean(tcc),
+            var_tcc = var(tcc)) %>%
+  select(SUBSECTION, avg_tcc, var_tcc)
 
-maptcc <- left_join(ecomap, avg_tcc, by = join_by(SUBSECTION))
+truth_tcc <- readRDS("pop_dat.rds") %>%
+  group_by(SUBSECTION) %>%
+  summarize(mean_tcc = mean(tcc),
+            var_tcc = var(tcc))
 
-ggplot() +
-  geom_sf(data = maptcc, aes(fill = avg_tcc)) +
+maptcc_viz <- left_join(ecomap, avg_tcc, by = join_by(SUBSECTION))
+maptcc_truth <- left_join(ecomap, truth_tcc, by = join_by(SUBSECTION))
+
+# in viz_dat: avg
+maptcc_avg <- ggplot() +
+  geom_sf(data = maptcc_viz, aes(fill = avg_tcc)) +
   scale_fill_gradient(low = "gold1", high = "springgreen4", 
                       name = "Mean TCC") +
-  theme_minimal()
+  theme_minimal(base_size = 14) +
+  theme_void()
+
+# in viz_dat: var
+maptcc_var <- ggplot() +
+  geom_sf(data = maptcc_viz, aes(fill = var_tcc)) +
+  scale_fill_gradient(low = "gold1", high = "springgreen4", 
+                      name = "TCC Variance") +
+  theme_minimal(base_size = 14) +
+  theme_void()
+
+ggsave("maptcc_avg.png", maptcc_avg)
+ggsave("maptcc_var.png", maptcc_var)
+
+# in truth: avg
+ggplot() +
+  geom_sf(data = maptcc_truth, aes(fill = mean_tcc)) +
+  scale_fill_gradient(low = "gold1", high = "springgreen4", 
+                      name = "Mean TCC") +
+  theme_minimal() + theme_void()
+
+# in truth: var
+ggplot() +
+  geom_sf(data = maptcc_truth, aes(fill = var_tcc)) +
+  scale_fill_gradient(low = "gold1", high = "springgreen4", 
+                      name = "TCC Variance") +
+  theme_minimal() + theme_void()
 
 ```
 

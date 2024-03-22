@@ -23,8 +23,10 @@ library(matrixcalc)
 
 ```{r}
 # LOADING DATA
-pop_dat <- readRDS(here("pop_dat.rds"))
-data <- readRDS(here("dat_wt.rds"))
+pop_dat <- readRDS(here("pop_dat.rds")) %>%
+  mutate(sq_tcc = tcc^2)
+data <- readRDS(here("dat_wt.rds")) %>%
+  mutate(sq_tcc = tcc^2)
 
 prop_tnt <- read_csv(here("data/m333.csv"), show_col_types = FALSE) %>%
   rename(SUBSECTION = MAP_UNIT_S,
@@ -46,6 +48,7 @@ dat_list <- data %>%
   group_split()
 
 np <- prop_tnt$npixels
+domains <- unique(true_est$SUBSECTION)
 
 prop_split <- prop_tnt %>%
   group_by(SUBSECTION) %>%
@@ -154,8 +157,8 @@ get_greg <- function(working_fit, formula, by,
 
 # spatially smoothed model-assisted estimator
 get_ssma <- function(direct_est, adj_mat, r, truth,
-                     pc_u = 5, pc_alpha = 0.01, 
-                     pc_u_phi = 0.5, pc_alpha_phi = 2/3, CI = .95) {
+                     pc_u = 5, pc_alpha = 0.1, 
+                     pc_u_phi = 0.5, pc_alpha_phi = 0.5, CI = .95) {
   hyperpc_bym_int <- list(
     prec = list(prior = "pc.prec", param = c(pc_u , pc_alpha)),  
     phi = list(prior = 'pc', param = c(pc_u_phi , pc_alpha_phi))
@@ -200,8 +203,166 @@ get_ssma <- function(direct_est, adj_mat, r, truth,
 ```
 
 ```{r}
+# just HT
+nreps <- 1000 # change to length(dat_list)
+HTres <- data.frame(region = c(), 
+                      est = c(),
+                      var = c(),
+                      lower = c(),
+                      upper = c(),
+                      method = c(),
+                      rep = c(),
+                      true_val = c(),
+                      prop_tnt = c(), 
+                      var_biomass = c())
+
+for (i in 1:nreps) {
+  rep_dat <- dat_list[[i]]
+
+  sample_des <- svydesign(id = ~1,
+                          data = rep_dat,
+                          weights = ~weights)
+  
+  tnttotal <- (rep_dat %>% 
+    group_by(SUBSECTION) %>%
+    count())$n
+  
+  tnt1s <- (rep_dat %>% 
+    group_by(SUBSECTION) %>%
+    filter(tnt == 1) %>%
+    count())$n
+  
+  proptnt <- tnt1s / tnttotal
+  var_bio <- unique((rep_dat %>% 
+    group_by(SUBSECTION) %>%
+    mutate(var_bio = var(DRYBIO)))$var_bio)
+  
+  HT <- get_direct(~DRYBIO, ~SUBSECTION, sample_des, i, true_est$true_val)
+  HT$prop_tnt <- proptnt
+  HT$var_biomass <- var_bio
+  
+  HTres <- rbind(HTres, HT)
+  print(i)
+}
+
+# biomass var for high tnt=0 areas
+zeroregions <- HTres %>% filter(region %in% c("M333Ah", "M333Ai", "M333Bc", "M333Cg", "M333Cf", "M333Cg", "M333Ch"))
+
+proptntboxplot <- ggplot(HTres, aes(x = region, y = prop_tnt)) + 
+  geom_boxplot() +
+  labs(x = "Region",
+       y = "Propotion Tnt = 1") +
+  theme_minimal(base_size = 14) 
+
+varbiomassboxplot <- ggplot(HTres, aes(x = region, y = var_biomass)) + 
+  geom_boxplot() +
+  labs(x = "Region",
+       y = "Biomass Variance") +
+  theme_minimal(base_size = 14) 
+
+# checking if weights are normal
+wts_box <- data %>% select(SUBSECTION, weights)
+
+hist((wts_box %>% filter(SUBSECTION == "M333Ac"))$weights)
+hist((wts_box %>% filter(SUBSECTION == "M333Ah"))$weights)
+
+wtboxplot <- ggplot(wts_box %>% filter(SUBSECTION != "M333Cc"), 
+                    aes(x = SUBSECTION, y = weights)) + 
+  geom_boxplot() +
+  labs(x = "Region",
+       y = "Weights") +
+  theme_minimal(base_size = 14) 
+
+ggplot(HTres %>% filter(region == "M333Ac")) +
+  geom_histogram(aes(x = est)) +
+  geom_vline(xintercept = true_est$true_val[true_est$SUBSECTION == "M333Ac"])
+
+ggplot(HTres %>% filter(region == "M333Ah")) +
+  geom_histogram(aes(x = est)) +
+  geom_vline(xintercept = true_est$true_val[true_est$SUBSECTION == "M333Ah"])
+
+ggplot(HTres %>% filter(region == "M333Cg")) +
+  geom_histogram(aes(x = est)) +
+  geom_vline(xintercept = true_est$true_val[true_est$SUBSECTION == "M333Cg"])
+
+ggplot(HTres %>% filter(region == "M333Ai")) +
+  geom_histogram(aes(x = est)) +
+  geom_vline(xintercept = true_est$true_val[true_est$SUBSECTION == "M333Ai"])
+
+ggplot(pop_dat %>% filter(SUBSECTION == "M333Ac")) +
+  geom_histogram(aes(x = DRYBIO)) +
+  geom_vline(xintercept = true_est$true_val[true_est$SUBSECTION == "M333Ac"])
+
+# THIS IS THE KEY TO THE HT OUTLIERS ISSUE !!!!!
+sample_means <- data.frame(SUBSECTION = c(),
+                           mean = c(),
+                           rep = c())
+for (i in 1:nreps) {
+  rep_dat <- dat_list[[i]]
+  means <- rep_dat %>% 
+    group_by(SUBSECTION) %>% 
+    summarize(mean = mean(DRYBIO)) %>%
+    select(SUBSECTION, mean)
+  means$rep = i
+  sample_means <- rbind(sample_means, means)
+  print(i)
+}
+
+for (i in domains) {
+  print(ggplot(sample_means %>% filter(SUBSECTION == i)) +
+    geom_histogram(aes(x = mean)) +
+    geom_vline(xintercept = true_est$true_val[true_est$SUBSECTION == i]) +
+    labs(title = paste("Subsection", i, sep = " ")))
+}
+
+for (i in domains) {
+  print(ggplot(pop_dat %>% filter(SUBSECTION == i)) +
+          geom_histogram(aes(x = sqrt(DRYBIO))) + 
+          labs(title = paste("Subsection", i, sep = " ")))
+}
+
+# PS: is tnt a good classifier?
+
+tnt_props <- data.frame(SUBSECTION = c(),
+                        diff = c(),
+                        rep = c())
+for (i in 1:nreps) {
+  rep_dat <- dat_list[[i]]
+  tntpr <- rep_dat %>% group_by(SUBSECTION, tnt) %>%
+    summarize(DRYBIO = mean(DRYBIO)) %>%
+    pivot_wider(id_cols = SUBSECTION, names_from = tnt, 
+                values_from = DRYBIO, names_prefix = "tnt") %>%
+    mutate(diff = tnt1 - tnt0) %>%
+    ungroup() %>%
+    select(SUBSECTION, diff)
+  tntpr$rep <- i
+  tnt_props <- rbind(tnt_props, tntpr)
+  print(i)
+}
+
+for (i in domains) {
+  print(ggplot(tnt_props %>% filter(SUBSECTION == i)) +
+    geom_histogram(aes(x = diff)) +
+    labs(title = paste("Subsection", i, sep = " ")))
+}
+
+medians <- pop_dat %>% group_by(SUBSECTION) %>%
+  summarize(median = median(DRYBIO))
+
+data %>% group_by(rep, SUBSECTION) %>% count() %>% 
+  ungroup() %>% group_by(SUBSECTION) %>%
+  summarize(mean = mean(n),
+            min = min(n),
+            median = median(n),
+            max = max(n))
+
+mapview(m333) #Ai, Da, Cc, Ca
+```
+
+
+```{r}
 # ACTUAL SIMULATION: HT, PS, GREG
-nreps <- 2 # change to length(dat_list)
+nreps <- 1000 # change to length(dat_list)
 results <- data.frame(region = c(), 
                       est = c(),
                       var = c(),
@@ -223,7 +384,7 @@ for (i in 1:nreps) {
     group_by(SUBSECTION) %>%
     group_split()
   
-  fit <- svyglm(DRYBIO ~ tcc + tnt + tcc*tnt, sample_des)
+  fit <- svyglm(DRYBIO ~ tcc + sq_tcc, sample_des)
   
   # HT estimates
   results <- rbind(results, get_direct(~DRYBIO, ~SUBSECTION, sample_des, 
@@ -240,12 +401,14 @@ for (i in 1:nreps) {
   
   print(i)
 }
+
+saveRDS(results, "results1000.rds")
 ```
 
 ```{r}
 # ACTUAL SIMULATION: SSMA
-s <- 76
-e <- 100
+s <- 951
+e <- 1000
 
 for (i in s:e) {
   # get GREG estimates
@@ -256,6 +419,6 @@ for (i in s:e) {
   results <- rbind(results, get_ssma(GREG_est, m333_adj, i, true_est_sma$true_val))
   print(i)
 }
-
+max(results$rep[results$method == "SMA"])
 ```
 

@@ -25,6 +25,7 @@ library(matrixcalc)
 ```{r}
 # LOADING DATA
 m333_fire <- readRDS("m333_fire.rds")
+mapview(m333_fire)
 data <- readRDS("dat_fire.rds") %>%
   mutate(tnt = case_when( # refactor tnt as indicator variable
     tnt == 1 ~ 1,
@@ -35,8 +36,18 @@ data <- readRDS("dat_fire.rds") %>%
     PROVINCE = "M333"
   ) %>%
   rename(tcc = tcc16) %>%
-  filter(rep < 1001)
-fire_pop_dat <- readRDS("fire_pop_dat.rds")
+  filter(rep < 1001) %>%
+  mutate(sq_tcc = tcc^2)
+fire_pop_dat <- readRDS("fire_pop_dat.rds") %>%
+  mutate(sq_tcc = tcc^2)
+
+data %>% group_by(SUBSECTION, rep) %>% count() %>%
+  ungroup() %>%
+  group_by(SUBSECTION) %>%
+  summarize(mean = mean(n),
+            median = median(n),
+            min = min(n),
+            max = max(n))
 
 fire_list <- data %>%
   group_by(rep) %>%
@@ -53,7 +64,7 @@ np <- (fire_pop_dat %>%
   group_by(SUBSECTION) %>%
   count())$n
 
-domains <- unique(fire_true_est$SUBSECTION)
+fire_domains <- unique(fire_true_est$SUBSECTION)
 
 fire_prop_tnt <- fire_pop_dat %>%
   group_by(SUBSECTION) %>%
@@ -74,7 +85,7 @@ ggplot() + geom_sf(data = m333_fire) +
 
 m333_fire_adj <- wt_as_matrix(m333f_contig, st_weights(m333f_contig, style = "B"))
 
-fire_feature_ids <- c("M333Ah", "M333Ag", "M333Ae", "M333Ad", "M333Ab", "M333Aa", "M333Ba", "M333Bb", "M333Bc", "M333Cb", "M333Cc","M333Ca", "M333Cf", "M333Ai", "M333Da", "M333Ac", "M333Cg", "M333Ce", "M333Db", "M333Dd", "M333Ch", "M333De", "M333DcFIRE", "M333Dc")
+fire_feature_ids <- c("M333Ag", "M333Ab", "M333Aa", "M333Ba", "M333Cb", "M333Cc","M333Ca", "M333Cf", "M333Ai", "M333Da", "M333Ac", "M333Cg", "M333Ce", "M333Db", "M333Dd", "M333Ch", "M333De", "THORNEFIRE", "M333Dc", "WHITFIRE", "M333Ah", "CARPFIRE", "M333Ad", "M333Ae", "CHIPFIRE", "M333Bb", "M333Bc")
 
 # need to check whether these rownames are accurate
 rownames(m333_fire_adj) <- fire_feature_ids
@@ -171,8 +182,8 @@ get_greg <- function(working_fit, formula, by,
 
 # spatially smoothed model-assisted estimator
 get_ssma <- function(direct_est, adj_mat, r, truth,
-                     pc_u = 5, pc_alpha = 0.01, 
-                     pc_u_phi = 0.5, pc_alpha_phi = 2/3, CI = .95) {
+                     pc_u = 5, pc_alpha = 0.1, 
+                     pc_u_phi = 0.5, pc_alpha_phi = 0.5, CI = .95) {
   hyperpc_bym_int <- list(
     prec = list(prior = "pc.prec", param = c(pc_u , pc_alpha)),  
     phi = list(prior = 'pc', param = c(pc_u_phi , pc_alpha_phi))
@@ -218,7 +229,7 @@ get_ssma <- function(direct_est, adj_mat, r, truth,
 
 ```{r}
 # ACTUAL SIMULATION: HT, PS, GREG
-nreps <- 50 # change to length(dat_list)
+nreps <- 1000 # change to length(dat_list)
 fire_results <- data.frame(region = c(), 
                       est = c(),
                       var = c(),
@@ -235,37 +246,40 @@ for (i in 1:nreps) {
   sample_des <- svydesign(id = ~1,
                           data = rep_dat,
                           weights = ~weights)
-  
+
   rep_split <- rep_dat %>%
     group_by(SUBSECTION) %>%
     group_split()
-  
-  fit <- svyglm(DRYBIO ~ tcc + tnt + tcc*tnt, sample_des)
-  
+
+  fit <- svyglm(DRYBIO ~ tcc + sq_tcc, sample_des)
+
   # HT estimates
-  fire_results <- rbind(fire_results, get_direct(~DRYBIO, ~SUBSECTION, sample_des, 
+  fire_results <- rbind(fire_results, get_direct(~DRYBIO, ~SUBSECTION, sample_des,
                                        i, fire_true_est$true_val))
-  
+
   # PS estimates
-  fire_results <- rbind(fire_results, get_poststrat(rep_split, np, fire_prop_split, 
-                                          domains, i, fire_true_est$true_val))
-  
+  fire_results <- rbind(fire_results, get_poststrat(rep_split, np, fire_prop_split,
+                                          fire_domains, i, fire_true_est$true_val))
+
   # GREG estimates
-  GREG_est <- get_greg(fit, ~DRYBIO, ~SUBSECTION, 
+  GREG_est <- get_greg(fit, ~DRYBIO, ~SUBSECTION,
                        fire_pop_dat, sample_des, i, fire_true_est$true_val)
   fire_results <- rbind(fire_results, GREG_est)
   
   print(i)
 }
+
+saveRDS(fire_results, "fire_results1000.rds")
 ```
+
 
 ```{r}
 # ACTUAL SIMULATION: SSMA
-s <- 26
-e <- 50
-# NEED TO REORDER TRUE VAL TO MATCH FEATURE ID ORDER
+s <- 951
+e <- 1000
 
 for (i in s:e) {
+  
   # get GREG estimates
   GREG_est <- fire_results %>%
     filter(method == "GREG" & rep == i)
@@ -278,9 +292,164 @@ for (i in s:e) {
 
 ```{r}
 # METRICS 
+fire_results <- readRDS("fire_results1000.rds") %>%
+  mutate(method = fct_recode(method, "SSMA" = "SMA"))
+
 # will create separate file once results are larger
 fire_metrics <- fire_results %>%
   group_by(method, region) %>%
+  mutate(cov_rate = mean(ifelse(true_val >= lower & true_val <= upper, 1, 0)),
+         emp_mean = mean(est),
+         emp_var = mean((est - emp_mean)^2),
+         emp_mse = mean((est - true_val)^2),
+         prb = (emp_mean - true_val) / true_val * 100,
+         prb_mse = mean((var - emp_mse) / emp_mse * 100)) %>%
+  dplyr::select(method, region, true_val, cov_rate, emp_mean, 
+                emp_var, emp_mse, prb, prb_mse) %>%
+  mutate(method = factor(method, levels = c("HT", "PS", "GREG", "SMA")),
+         method = fct_recode(method, "SSMA" = "SMA")) %>%
+  unique()
+
+# SHOW TO KELLY
+fire_metrics %>% filter(region == "THORNEFIRE") %>%
+  select(method, prb, cov_rate, emp_mse, prb_mse)
+
+fire_metrics %>% filter(region == "CARPFIRE") %>%
+  select(method, prb, cov_rate, emp_mse, prb_mse)
+
+fire_metrics %>% filter(region == "CHIPFIRE") %>%
+  select(method, prb, cov_rate, emp_mse, prb_mse)
+
+fire_metrics %>% filter(region == "WHITFIRE") %>%
+  select(method, prb, cov_rate, emp_mse, prb_mse)
+
+
+res_thorne <- fire_results %>% 
+  filter(region == "THORNEFIRE") %>%
+  group_by(method) %>%
+  mutate(emp_mean = mean(est),
+         method = factor(method, levels = c("HT", "PS", "GREG", "SSMA"))) 
+res_carp <- fire_results %>% 
+  filter(region == "CARPFIRE") %>%
+  group_by(method) %>%
+  mutate(emp_mean = mean(est),
+         method = factor(method, levels = c("HT", "PS", "GREG", "SSMA"))) 
+res_chip <- fire_results %>% 
+  filter(region == "CHIPFIRE") %>%
+  group_by(method) %>%
+  mutate(emp_mean = mean(est),
+         method = factor(method, levels = c("HT", "PS", "GREG", "SSMA"))) 
+res_whit <- fire_results %>% 
+  filter(region == "WHITFIRE") %>%
+  group_by(method) %>%
+  mutate(emp_mean = mean(est),
+         method = factor(method, levels = c("HT", "PS", "GREG", "SSMA"))) 
+
+# SHOW TO KELLY
+fire_est_boxplot_thorne <- ggplot(res_thorne, aes(x = method, y = est)) +
+  geom_boxplot() +
+  geom_hline(yintercept = (fire_true_est %>% 
+                             filter(SUBSECTION == "THORNEFIRE"))$true_val, 
+             col = "firebrick", lwd = 1.2) +
+  geom_hline(yintercept = (fire_true_est %>% 
+                             filter(SUBSECTION == "M333Dc"))$true_val, 
+             col = "darkolivegreen", lwd = 1.2, linetype = "dashed") +
+  labs(x = "Method", y = "Dry Biomass Estimates (Tons)") +
+  theme_minimal(base_size = 24)
+
+fire_est_boxplot_carp <- ggplot(res_carp, aes(x = method, y = est)) +
+  geom_boxplot() +
+  geom_hline(yintercept = (fire_true_est %>% 
+                             filter(SUBSECTION == "CARPFIRE"))$true_val, 
+             col = "firebrick", lwd = 1.2) +
+  geom_hline(yintercept = (fire_true_est %>% 
+                             filter(SUBSECTION == "M333Ad"))$true_val, 
+             col = "darkolivegreen4", lwd = 1.2, linetype = "dashed") +
+  geom_hline(yintercept = (fire_true_est %>% 
+                             filter(SUBSECTION == "M333Ae"))$true_val, 
+             col = "darkolivegreen", lwd = 1.2, linetype = "dashed") +
+  labs(x = "Method", y = "Dry Biomass Estimates (Tons)") +
+  theme_minimal(base_size = 24)
+
+fire_est_boxplot_chip <- ggplot(res_chip, aes(x = method, y = est)) +
+  geom_boxplot() +
+  geom_hline(yintercept = (fire_true_est %>% 
+                             filter(SUBSECTION == "CHIPFIRE"))$true_val, 
+             col = "firebrick", lwd = 1.2) +
+  geom_hline(yintercept = (fire_true_est %>% 
+                             filter(SUBSECTION == "M333Bb"))$true_val, 
+             col = "darkolivegreen", lwd = 1.2, linetype = "dashed") +
+  geom_hline(yintercept = (fire_true_est %>% 
+                             filter(SUBSECTION == "M333Bc"))$true_val, 
+             col = "darkolivegreen4", lwd = 1.2, linetype = "dashed") +
+  labs(x = "Method", y = "Dry Biomass Estimates (Tons)") +
+  theme_minimal(base_size = 24)
+
+fire_est_boxplot_whit <- ggplot(res_whit, aes(x = method, y = est)) +
+  geom_boxplot() +
+  geom_hline(yintercept = (fire_true_est %>% 
+                             filter(SUBSECTION == "WHITFIRE"))$true_val, 
+             col = "firebrick", lwd = 1.2) +
+  geom_hline(yintercept = (fire_true_est %>% 
+                             filter(SUBSECTION == "M333Ah"))$true_val, 
+             col = "darkolivegreen", lwd = 1.2, linetype = "dashed") +
+  labs(x = "Method", y = "Dry Biomass Estimates (Tons)") +
+  theme_minimal(base_size = 24)
+
+ggsave("thorne_ests.png", fire_est_boxplot_thorne)
+ggsave("whit_ests.png", fire_est_boxplot_whit)
+ggsave("carp_ests.png", fire_est_boxplot_carp)
+ggsave("chip_ests.png", fire_est_boxplot_chip)
+
+```
+
+```{r}
+m333_col <- m333_fire %>%
+  mutate(color = case_when((SUBSECTION == "CARPFIRE" |
+                             SUBSECTION == "CHIPFIRE" |
+                             SUBSECTION == "WHITFIRE" |
+                             SUBSECTION == "THORNEFIRE") ~ "fire",
+                           (SUBSECTION == "M333Dc" |
+                              SUBSECTION == "M333Ah" |
+                              SUBSECTION == "M333Bb" |
+                              SUBSECTION == "M333Ae") ~ "neighbA",
+                           (SUBSECTION == "M333Bc" |
+                              SUBSECTION == "M333Ad") ~ "neighbB",
+                           TRUE ~ "nothing"))
+fire_map <- ggplot() +
+  geom_sf(data = m333_col, aes(fill = factor(color))) +
+  scale_fill_manual(values = setNames(c("firebrick2", "darkolivegreen", "darkolivegreen4", "darkolivegreen3"), c("fire", "neighbA", "neighbB", "nothing"))) +
+  guides(fill = FALSE) +
+  theme_minimal(base_size = 14) +
+  theme_void()
+  
+ggsave("fire_m333.png", fire_map)
+
+```
+
+
+```{r}
+# wtf is going on here
+count_fire <- data %>%
+  filter(SUBSECTION == "M333AhFIRE" | 
+           SUBSECTION == "M333DaFIRE" | 
+           SUBSECTION == "M333DcFIRE") %>%
+  group_by(SUBSECTION, rep) %>%
+  count()
+
+hist((count_fire %>% filter(SUBSECTION == "M333AhFIRE"))$n, breaks = 6)
+length((count_fire %>% filter(SUBSECTION == "M333AhFIRE"))$n)
+hist((count_fire %>% filter(SUBSECTION == "M333DaFIRE"))$n, breaks = 5)
+length((count_fire %>% filter(SUBSECTION == "M333DaFIRE"))$n)
+hist((count_fire %>% filter(SUBSECTION == "M333DcFIRE"))$n)
+length((count_fire %>% filter(SUBSECTION == "M333DcFIRE"))$n)
+
+Da_ones <- (count_fire %>% filter(SUBSECTION == "M333DaFIRE" & n == 1))$rep
+
+Da_twoplus <- fire_res725 %>% filter(region == "M333DaFIRE") %>% filter(!(rep %in% Da_ones))
+
+Da_twoplus_metrics <- Da_twoplus %>%
+  group_by(method) %>%
   mutate(cov_rate = mean(ifelse(true_val >= lower & true_val <= upper, 1, 0)),
          emp_mean = mean(est),
          emp_var = mean((est - emp_mean)^2),
@@ -291,26 +460,5 @@ fire_metrics <- fire_results %>%
                 emp_var, emp_mse, prb, prb_mse) %>%
   mutate(method = factor(method, levels = c("HT", "PS", "GREG", "SMA"))) %>%
   unique()
-
-fire_metrics %>% filter(region == "M333DcFIRE")
-
-ggplot(fire_results, aes(x = method, y = est)) +
-  geom_boxplot()
-
-moreres <- fire_results %>% 
-  filter(region == "M333DcFIRE") %>%
-  group_by(method) %>%
-  mutate(emp_mean = mean(est),
-         method = factor(method, levels = c("HT", "PS", "GREG", "SMA"))) 
-
-dcfire_true <- (fire_true_est %>% filter(SUBSECTION == "M333DcFIRE"))$true_val
-dc_true <- (fire_true_est %>% filter(SUBSECTION == "M333Dc"))$true_val
-
-ggplot(moreres, aes(x = method, y = est)) +
-  geom_boxplot() +
-  geom_hline(yintercept = dcfire_true, col = "hotpink", lwd = 1.2) +
-  geom_hline(yintercept = dc_true, col = "darkblue", lwd = 1.2, linetype = "dashed") +
-  theme_minimal()
-
 ```
 
